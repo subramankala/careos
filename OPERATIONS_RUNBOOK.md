@@ -75,6 +75,29 @@ curl -s -X POST "$BASE/caregiver-links" \
   }" | python3 -m json.tool
 ```
 
+### Faster path: one script for onboarding and re-import
+
+```bash
+cd ~/careos
+set -a; source .env; set +a
+python3 scripts/onboard_support_plan.py \
+  --plan-json /absolute/path/patient_daily_support_plan.json \
+  --tenant-id <tenant_id> \
+  --caregiver-phone whatsapp:+<countrycode><number>
+```
+
+To update an existing patient's plan from a revised JSON:
+
+```bash
+python3 scripts/onboard_support_plan.py \
+  --plan-json /absolute/path/patient_daily_support_plan.json \
+  --tenant-id <tenant_id> \
+  --patient-id <patient_id> \
+  --care-plan-id <care_plan_id> \
+  --caregiver-phone whatsapp:+<countrycode><number> \
+  --replace-existing
+```
+
 ## Identity Resolution Debug (When WhatsApp Shows Wrong/No Schedule)
 
 ```bash
@@ -207,6 +230,13 @@ psql "$CAREOS_DATABASE_URL" -c "SELECT id, name FROM tenants ORDER BY created_at
 
 Inbound WhatsApp identity resolution currently requires one active participant phone number to map to exactly one linked patient.
 If one number is linked to multiple patients, webhook resolution fails closed.
+
+## WhatsApp context check
+
+Send `whoami` on WhatsApp to see:
+- participant role
+- active patient id
+- timezone
 
 ## Enable Proactive WhatsApp Push (Scheduler)
 

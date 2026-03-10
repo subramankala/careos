@@ -23,6 +23,31 @@ pip install -e .[dev]
 uvicorn careos.main:app --host 0.0.0.0 --port 8115 --reload
 ```
 
+## One-command onboarding/import
+
+Use the onboarding helper to create or update a patient from a support-plan JSON:
+
+```bash
+cd /Users/kumarmankala/code/Codex/Wellness-check/careos-lite
+set -a; source .env; set +a
+python3 scripts/onboard_support_plan.py \
+  --plan-json /absolute/path/to/patient_daily_support_plan.json \
+  --tenant-id <existing_tenant_id> \
+  --caregiver-phone whatsapp:+919949353918
+```
+
+To refresh an existing patient's plan from a revised JSON:
+
+```bash
+python3 scripts/onboard_support_plan.py \
+  --plan-json /absolute/path/to/patient_daily_support_plan.json \
+  --tenant-id <tenant_id> \
+  --patient-id <patient_id> \
+  --care-plan-id <care_plan_id> \
+  --caregiver-phone whatsapp:+919949353918 \
+  --replace-existing
+```
+
 ## Production VM setup order (no Docker)
 
 1. Copy env template and fill values:

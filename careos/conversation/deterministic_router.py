@@ -18,7 +18,10 @@ class DeterministicRouter(ConversationEngine):
         if command in {"help", "?"}:
             return CommandResult(
                 action="help",
-                text="Commands: schedule, next, status, done <item_no|win_id>, delay <item_no|win_id> <minutes>, skip <item_no|win_id>",
+                text=(
+                    "Commands: schedule, next, status, whoami, "
+                    "done <item_no|win_id>, delay <item_no|win_id> <minutes>, skip <item_no|win_id>"
+                ),
             )
 
         if command in {"schedule", "today"}:
@@ -44,6 +47,16 @@ class DeterministicRouter(ConversationEngine):
                 text=(
                     f"Status: completed={status.completed_count}, due={status.due_count}, "
                     f"missed={status.missed_count}, skipped={status.skipped_count}, score={status.adherence_score}%"
+                ),
+            )
+
+        if command in {"whoami", "profile"}:
+            return CommandResult(
+                action="whoami",
+                text=(
+                    f"You are {context.participant_role.value}. "
+                    f"Active patient: {context.patient_id}. "
+                    f"Timezone: {context.patient_timezone}."
                 ),
             )
 

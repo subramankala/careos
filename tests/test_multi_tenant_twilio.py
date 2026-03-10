@@ -204,3 +204,24 @@ def test_done_command_accepts_schedule_item_number() -> None:
     status = client.get(f"/patients/{patient_id}/status")
     assert status.status_code == 200
     assert status.json()["completed_count"] >= 1
+
+
+def test_whoami_returns_active_context() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "WhoAmI", "type": "family", "timezone": "Asia/Kolkata", "status": "active"},
+    ).json()
+    patient_id, _, _ = _seed_patient(tenant["id"], "whatsapp:+15550006666", "WhoAmI Dose", timezone="Asia/Kolkata")
+    response = client.post(
+        "/twilio/webhook",
+        data={
+            "From": "whatsapp:+15550006666",
+            "To": "whatsapp:+15558889999",
+            "Body": "whoami",
+            "MessageSid": "SM_whoami",
+        },
+    )
+    assert response.status_code == 200
+    assert "You are patient." in response.text
+    assert f"Active patient: {patient_id}" in response.text
