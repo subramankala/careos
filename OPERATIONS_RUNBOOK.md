@@ -2,6 +2,12 @@
 
 Reusable VM commands for onboarding, identity troubleshooting, and safe cleanup.
 
+Spec companion:
+[IMPLEMENTED_SPEC.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/IMPLEMENTED_SPEC.md)
+
+Documentation sync rule:
+- Any change to runtime behavior must update both this runbook and `IMPLEMENTED_SPEC.md`.
+
 ## Preconditions
 
 ```bash

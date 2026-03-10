@@ -124,6 +124,8 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 ## Architecture doc
 
 See [ARCHITECTURE.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/ARCHITECTURE.md).
+Implemented behavior reference:
+[IMPLEMENTED_SPEC.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/IMPLEMENTED_SPEC.md)
 
 ## Operations runbook
 
