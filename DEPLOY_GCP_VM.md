@@ -97,3 +97,8 @@ Then send WhatsApp message from a mapped participant number:
 - `schedule`
 - `next`
 - `status`
+
+## Reusable operations
+
+For onboarding new patients/caregivers, identity troubleshooting, and safe tenant cleanup:
+[OPERATIONS_RUNBOOK.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/OPERATIONS_RUNBOOK.md)

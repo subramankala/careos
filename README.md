@@ -97,6 +97,11 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 
 See [ARCHITECTURE.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/ARCHITECTURE.md).
 
+## Operations runbook
+
+Reusable onboarding and cleanup commands:
+[OPERATIONS_RUNBOOK.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/OPERATIONS_RUNBOOK.md)
+
 ## Control-plane rule
 
 The deployment path remains:
