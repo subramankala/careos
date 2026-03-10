@@ -207,3 +207,34 @@ psql "$CAREOS_DATABASE_URL" -c "SELECT id, name FROM tenants ORDER BY created_at
 
 Inbound WhatsApp identity resolution currently requires one active participant phone number to map to exactly one linked patient.
 If one number is linked to multiple patients, webhook resolution fails closed.
+
+## Enable Proactive WhatsApp Push (Scheduler)
+
+1) Configure in `.env`:
+
+```bash
+CAREOS_TWILIO_ACCOUNT_SID=AC...
+CAREOS_TWILIO_AUTH_TOKEN=...
+CAREOS_TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
+CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true
+CAREOS_SCHEDULER_PATIENT_IDS=<patient_id_1>,<patient_id_2>
+```
+
+2) Restart scheduler:
+
+```bash
+sudo systemctl restart careos-lite-scheduler
+sudo journalctl -u careos-lite-scheduler -n 50 --no-pager
+```
+
+3) Verify outbound attempts:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -c "
+SELECT created_at, patient_id, participant_id, message_type, body, structured_payload
+FROM message_events
+WHERE direction='outbound'
+ORDER BY created_at DESC
+LIMIT 30;
+"
+```

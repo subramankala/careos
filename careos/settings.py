@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     use_in_memory: bool = False
 
     twilio_auth_token: str = ""
+    twilio_account_sid: str = ""
     validate_twilio_signature: bool = True
     public_webhook_base_url: str = ""
 
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
 
     scheduler_poll_seconds: int = 30
     scheduler_patient_ids: str = ""
+    enable_scheduler_whatsapp_push: bool = False
 
     conversation_engine: str = "deterministic"
     openclaw_base_url: str = ""

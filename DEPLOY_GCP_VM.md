@@ -29,10 +29,13 @@ cp .env.example .env
 Required vars to review before start:
 
 - `CAREOS_DATABASE_URL`
+- `CAREOS_TWILIO_ACCOUNT_SID`
 - `CAREOS_TWILIO_AUTH_TOKEN`
+- `CAREOS_TWILIO_WHATSAPP_NUMBER`
 - `CAREOS_PUBLIC_WEBHOOK_BASE_URL`
 - `CAREOS_VALIDATE_TWILIO_SIGNATURE` (keep `true` in production)
 - `CAREOS_CONVERSATION_ENGINE` (`deterministic` or `openclaw`)
+- `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH` (`true` to enable proactive push)
 
 Optional but recommended:
 

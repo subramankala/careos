@@ -58,8 +58,11 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_DATABASE_URL` (required for Postgres mode, e.g. `postgresql://user:pass@host:5432/careos`)
 - `CAREOS_USE_IN_MEMORY=true|false` (default `false`; set `true` for local quick testing)
 - `CAREOS_TWILIO_AUTH_TOKEN` (required when signature validation is enabled)
+- `CAREOS_TWILIO_ACCOUNT_SID` (required for proactive scheduler WhatsApp pushes)
+- `CAREOS_TWILIO_WHATSAPP_NUMBER` (required for proactive scheduler WhatsApp pushes)
 - `CAREOS_VALIDATE_TWILIO_SIGNATURE=true|false` (default `true`)
 - `CAREOS_PUBLIC_WEBHOOK_BASE_URL` (optional; recommended in production)
+- `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
 - Full template: [.env.example](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/.env.example)
 
