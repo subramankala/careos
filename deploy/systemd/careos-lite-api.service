@@ -1,0 +1,16 @@
+[Unit]
+Description=CareOS Lite API (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/careos-lite
+EnvironmentFile=/opt/careos-lite/.env
+ExecStart=/opt/careos-lite/.venv/bin/uvicorn careos.main:app --host 0.0.0.0 --port 8115
+Restart=always
+RestartSec=3
+User=ubuntu
+Group=ubuntu
+
+[Install]
+WantedBy=multi-user.target
