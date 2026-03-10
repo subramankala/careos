@@ -20,6 +20,12 @@ class Flexibility(StrEnum):
     FLEXIBLE = "flexible"
 
 
+class RecurrenceType(StrEnum):
+    ONE_OFF = "one_off"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
 class PersonaType(StrEnum):
     SKEPTICAL_RESISTANT = "skeptical_resistant"
     DISCIPLINED_ROUTINE_ORIENTED = "disciplined_routine_oriented"

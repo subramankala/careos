@@ -14,6 +14,7 @@ class WinService:
 
     def today(self, patient_id: str, at: datetime | None = None) -> PatientTodayResponse:
         now = at or datetime.now(UTC)
+        self.store.ensure_recurrence_instances(patient_id, now)
         profile = self.store.get_patient_profile(patient_id) or {"timezone": "UTC"}
         timezone_name = str(profile.get("timezone", "UTC"))
         timezone = ZoneInfo(timezone_name)
@@ -27,6 +28,7 @@ class WinService:
 
     def next_text(self, patient_id: str, at: datetime | None = None) -> str:
         now = at or datetime.now(UTC)
+        self.store.ensure_recurrence_instances(patient_id, now)
         item = self.store.next_item(patient_id, now)
         if item is None:
             return "No pending wins. Everything due today is handled."
@@ -34,6 +36,7 @@ class WinService:
 
     def status(self, patient_id: str, at: datetime | None = None) -> PatientStatusResponse:
         now = at or datetime.now(UTC)
+        self.store.ensure_recurrence_instances(patient_id, now)
         counts = self.store.status_counts(patient_id, now)
         completed = counts.get(WinState.COMPLETED.value, 0)
         due = counts.get(WinState.DUE.value, 0)

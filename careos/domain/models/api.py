@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from careos.domain.enums.core import Criticality, Flexibility, PersonaType, Role, WinState
+from careos.domain.enums.core import Criticality, Flexibility, PersonaType, RecurrenceType, Role, WinState
 
 
 class TenantCreate(BaseModel):
@@ -58,6 +58,10 @@ class WinDefinitionCreate(BaseModel):
     why_it_matters: str = ""
     criticality: Criticality
     flexibility: Flexibility
+    recurrence_type: RecurrenceType = RecurrenceType.ONE_OFF
+    recurrence_interval: int = 1
+    recurrence_days_of_week: list[int] = Field(default_factory=list)  # 0=Mon..6=Sun
+    recurrence_until: datetime | None = None
     temporary_start: datetime | None = None
     temporary_end: datetime | None = None
     default_channel_policy: dict[str, str] = Field(default_factory=dict)

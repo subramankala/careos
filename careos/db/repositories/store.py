@@ -9,7 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from careos.db.connection import get_connection
-from careos.domain.enums.core import Criticality, Flexibility, PersonaType, Role, WinState
+from careos.domain.enums.core import Criticality, Flexibility, PersonaType, RecurrenceType, Role, WinState
 from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
@@ -62,6 +62,10 @@ class Store(ABC):
 
     @abstractmethod
     def get_patient_profile(self, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def ensure_recurrence_instances(self, patient_id: str, now: datetime, horizon_days: int = 30) -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -170,28 +174,30 @@ class InMemoryStore(Store):
         created = 0
         for definition in payload.definitions:
             definition_id = str(uuid4())
-            self.win_definitions[definition_id] = {
+            definition_row = {
                 "id": definition_id,
                 "care_plan_id": care_plan_id,
-                **definition.model_dump(),
+                **definition.model_dump(mode="json"),
             }
+            if payload.instances:
+                seed_start = _ensure_dt(payload.instances[0].scheduled_start)
+                seed_end = _ensure_dt(payload.instances[0].scheduled_end)
+                duration_minutes = int((seed_end - seed_start).total_seconds() // 60)
+                definition_row["seed_start"] = seed_start
+                definition_row["seed_duration_minutes"] = max(duration_minutes, 1)
+            self.win_definitions[definition_id] = definition_row
             for instance in payload.instances:
-                win_id = str(uuid4())
-                self.win_instances[win_id] = {
-                    "id": win_id,
-                    "patient_id": payload.patient_id,
-                    "win_definition_id": definition_id,
-                    "scheduled_start": instance.scheduled_start,
-                    "scheduled_end": instance.scheduled_end,
-                    "current_state": WinState.PENDING,
-                }
-                self.win_to_title[win_id] = definition.title
-                self.win_to_category[win_id] = definition.category
-                self.win_to_criticality[win_id] = definition.criticality
-                self.win_to_flexibility[win_id] = definition.flexibility
-                self.win_to_temporary_start[win_id] = definition.temporary_start
-                self.win_to_temporary_end[win_id] = definition.temporary_end
+                start = _ensure_dt(instance.scheduled_start)
+                if self._instance_exists(definition_id, start):
+                    continue
+                self._create_instance(
+                    patient_id=payload.patient_id,
+                    definition_id=definition_id,
+                    scheduled_start=start,
+                    scheduled_end=_ensure_dt(instance.scheduled_end),
+                )
                 created += 1
+        created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
@@ -271,6 +277,102 @@ class InMemoryStore(Store):
                 )
             )
         return sorted(rows, key=lambda item: item.scheduled_start)
+
+    def ensure_recurrence_instances(self, patient_id: str, now: datetime, horizon_days: int = 30) -> int:
+        profile = self.get_patient_profile(patient_id)
+        timezone = ZoneInfo(profile["timezone"]) if profile else ZoneInfo("UTC")
+        now_utc = _ensure_utc(now)
+        start_day = now_utc.astimezone(timezone).date()
+        end_day = start_day + timedelta(days=horizon_days)
+        created = 0
+
+        for definition_id, definition in self.win_definitions.items():
+            care_plan = self.care_plans.get(str(definition.get("care_plan_id")))
+            if care_plan is None or str(care_plan.get("patient_id")) != str(patient_id):
+                continue
+            recurrence_type = RecurrenceType(str(definition.get("recurrence_type", RecurrenceType.ONE_OFF.value)))
+            if recurrence_type is RecurrenceType.ONE_OFF:
+                continue
+
+            seed_start_raw = definition.get("seed_start")
+            seed_duration_minutes = int(definition.get("seed_duration_minutes", 0) or 0)
+            if seed_start_raw is None or seed_duration_minutes <= 0:
+                continue
+            seed_start_utc = _ensure_dt(seed_start_raw)
+            seed_local = seed_start_utc.astimezone(timezone)
+
+            interval = max(int(definition.get("recurrence_interval", 1) or 1), 1)
+            days_raw = definition.get("recurrence_days_of_week") or []
+            allowed_days = {int(v) for v in days_raw} if days_raw else {seed_local.weekday()}
+            recurrence_until_raw = definition.get("recurrence_until")
+            recurrence_until = _ensure_dt(recurrence_until_raw) if recurrence_until_raw else None
+
+            cursor = start_day
+            while cursor <= end_day:
+                if not _matches_recurrence(
+                    recurrence_type=recurrence_type,
+                    seed_date=seed_local.date(),
+                    candidate_date=cursor,
+                    interval=interval,
+                    allowed_weekdays=allowed_days,
+                ):
+                    cursor += timedelta(days=1)
+                    continue
+
+                local_start = datetime.combine(cursor, seed_local.timetz()).replace(tzinfo=timezone)
+                start_utc = local_start.astimezone(UTC)
+                if recurrence_until is not None and start_utc > recurrence_until:
+                    cursor += timedelta(days=1)
+                    continue
+                if self._instance_exists(str(definition_id), start_utc):
+                    cursor += timedelta(days=1)
+                    continue
+
+                self._create_instance(
+                    patient_id=str(patient_id),
+                    definition_id=str(definition_id),
+                    scheduled_start=start_utc,
+                    scheduled_end=start_utc + timedelta(minutes=seed_duration_minutes),
+                )
+                created += 1
+                cursor += timedelta(days=1)
+        return created
+
+    def _instance_exists(self, definition_id: str, scheduled_start: datetime) -> bool:
+        for instance in self.win_instances.values():
+            if str(instance["win_definition_id"]) != str(definition_id):
+                continue
+            if _ensure_dt(instance["scheduled_start"]) == _ensure_dt(scheduled_start):
+                return True
+        return False
+
+    def _create_instance(
+        self,
+        *,
+        patient_id: str,
+        definition_id: str,
+        scheduled_start: datetime,
+        scheduled_end: datetime,
+    ) -> str:
+        definition = self.win_definitions[definition_id]
+        win_id = str(uuid4())
+        self.win_instances[win_id] = {
+            "id": win_id,
+            "patient_id": patient_id,
+            "win_definition_id": definition_id,
+            "scheduled_start": scheduled_start,
+            "scheduled_end": scheduled_end,
+            "current_state": WinState.PENDING,
+        }
+        self.win_to_title[win_id] = str(definition["title"])
+        self.win_to_category[win_id] = str(definition["category"])
+        self.win_to_criticality[win_id] = Criticality(str(definition["criticality"]))
+        self.win_to_flexibility[win_id] = Flexibility(str(definition["flexibility"]))
+        temporary_start = definition.get("temporary_start")
+        temporary_end = definition.get("temporary_end")
+        self.win_to_temporary_start[win_id] = _ensure_dt(temporary_start) if temporary_start else None
+        self.win_to_temporary_end[win_id] = _ensure_dt(temporary_end) if temporary_end else None
+        return win_id
 
     def next_item(self, patient_id: str, now: datetime) -> TimelineItem | None:
         for item in self.list_today(patient_id, now):
@@ -401,11 +503,19 @@ class PostgresStore(Store):
         created = 0
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             for definition in payload.definitions:
+                seed_start = _ensure_dt(payload.instances[0].scheduled_start) if payload.instances else None
+                seed_duration_minutes = None
+                if payload.instances:
+                    seed_end = _ensure_dt(payload.instances[0].scheduled_end)
+                    seed_duration_minutes = max(int((seed_end - seed_start).total_seconds() // 60), 1) if seed_start else 1
                 cur.execute(
                     """
                     INSERT INTO win_definitions
-                    (care_plan_id, category, title, instructions, why_it_matters, criticality, flexibility, temporary_start, temporary_end, default_channel_policy, escalation_policy)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                    (care_plan_id, category, title, instructions, why_it_matters, criticality, flexibility,
+                     recurrence_type, recurrence_interval, recurrence_days_of_week, recurrence_until,
+                     seed_start, seed_duration_minutes,
+                     temporary_start, temporary_end, default_channel_policy, escalation_policy)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int[], %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                     RETURNING id
                     """,
                     (
@@ -416,6 +526,12 @@ class PostgresStore(Store):
                         definition.why_it_matters,
                         definition.criticality.value,
                         definition.flexibility.value,
+                        definition.recurrence_type.value,
+                        definition.recurrence_interval,
+                        definition.recurrence_days_of_week,
+                        definition.recurrence_until,
+                        seed_start,
+                        seed_duration_minutes,
                         definition.temporary_start,
                         definition.temporary_end,
                         json.dumps(definition.default_channel_policy),
@@ -424,14 +540,29 @@ class PostgresStore(Store):
                 )
                 definition_id = cur.fetchone()[0]
                 for instance in payload.instances:
+                    start = _ensure_dt(instance.scheduled_start)
                     cur.execute(
                         """
                         INSERT INTO win_instances (win_definition_id, patient_id, scheduled_start, scheduled_end, current_state)
-                        VALUES (%s, %s, %s, %s, %s)
+                        SELECT %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM win_instances
+                          WHERE win_definition_id = %s AND scheduled_start = %s
+                        )
                         """,
-                        (definition_id, payload.patient_id, instance.scheduled_start, instance.scheduled_end, WinState.PENDING.value),
+                        (
+                            definition_id,
+                            payload.patient_id,
+                            start,
+                            _ensure_dt(instance.scheduled_end),
+                            WinState.PENDING.value,
+                            definition_id,
+                            start,
+                        ),
                     )
-                    created += 1
+                    if cur.rowcount > 0:
+                        created += 1
+        created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
@@ -501,6 +632,82 @@ class PostgresStore(Store):
                 "timezone": str(data["timezone"] or "UTC"),
                 "persona_type": str(data["persona_type"] or PersonaType.CAREGIVER_MANAGED_ELDER.value),
             }
+
+    def ensure_recurrence_instances(self, patient_id: str, now: datetime, horizon_days: int = 30) -> int:
+        profile = self.get_patient_profile(patient_id)
+        timezone = ZoneInfo((profile or {}).get("timezone", "UTC"))
+        now_utc = _ensure_utc(now)
+        start_day = now_utc.astimezone(timezone).date()
+        end_day = start_day + timedelta(days=horizon_days)
+        created = 0
+
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT wd.id, wd.recurrence_type, wd.recurrence_interval, wd.recurrence_days_of_week,
+                       wd.recurrence_until, wd.seed_start, wd.seed_duration_minutes
+                FROM win_definitions wd
+                JOIN care_plans cp ON cp.id = wd.care_plan_id
+                WHERE cp.patient_id = %s
+                  AND wd.recurrence_type IN ('daily', 'weekly')
+                """,
+                (patient_id,),
+            )
+            definitions = cur.fetchall()
+            for definition in definitions:
+                definition_id = str(definition[0])
+                recurrence_type = RecurrenceType(str(definition[1]))
+                interval = max(int(definition[2] or 1), 1)
+                days_raw = definition[3] or []
+                recurrence_until = _ensure_dt(definition[4]) if definition[4] else None
+                seed_start_raw = definition[5]
+                duration_minutes = int(definition[6] or 0)
+                if seed_start_raw is None or duration_minutes <= 0:
+                    continue
+
+                seed_start = _ensure_dt(seed_start_raw)
+                seed_local = seed_start.astimezone(timezone)
+                allowed_days = {int(v) for v in days_raw} if days_raw else {seed_local.weekday()}
+
+                cursor_day = start_day
+                while cursor_day <= end_day:
+                    if not _matches_recurrence(
+                        recurrence_type=recurrence_type,
+                        seed_date=seed_local.date(),
+                        candidate_date=cursor_day,
+                        interval=interval,
+                        allowed_weekdays=allowed_days,
+                    ):
+                        cursor_day += timedelta(days=1)
+                        continue
+                    local_start = datetime.combine(cursor_day, seed_local.timetz()).replace(tzinfo=timezone)
+                    start_utc = local_start.astimezone(UTC)
+                    if recurrence_until is not None and start_utc > recurrence_until:
+                        cursor_day += timedelta(days=1)
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO win_instances (win_definition_id, patient_id, scheduled_start, scheduled_end, current_state)
+                        SELECT %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM win_instances
+                          WHERE win_definition_id = %s AND scheduled_start = %s
+                        )
+                        """,
+                        (
+                            definition_id,
+                            patient_id,
+                            start_utc,
+                            start_utc + timedelta(minutes=duration_minutes),
+                            WinState.PENDING.value,
+                            definition_id,
+                            start_utc,
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        created += 1
+                    cursor_day += timedelta(days=1)
+        return created
 
     def list_today(self, patient_id: str, now: datetime) -> list[TimelineItem]:
         profile = self.get_patient_profile(patient_id)
@@ -677,3 +884,24 @@ def _derived_state(current: WinState, start: datetime, end: datetime, now: datet
     if start <= now <= end:
         return WinState.DUE
     return current
+
+
+def _matches_recurrence(
+    *,
+    recurrence_type: RecurrenceType,
+    seed_date: date,
+    candidate_date: date,
+    interval: int,
+    allowed_weekdays: set[int],
+) -> bool:
+    if candidate_date < seed_date:
+        return False
+    day_delta = (candidate_date - seed_date).days
+    if recurrence_type is RecurrenceType.DAILY:
+        return day_delta % interval == 0
+    if recurrence_type is RecurrenceType.WEEKLY:
+        if candidate_date.weekday() not in allowed_weekdays:
+            return False
+        week_delta = day_delta // 7
+        return week_delta % interval == 0
+    return False

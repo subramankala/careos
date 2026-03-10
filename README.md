@@ -33,6 +33,7 @@ cp .env.example .env
 ```bash
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -116,3 +117,9 @@ The conversation engine is intentionally behind FastAPI and must not call Twilio
 - Historical completed instances are never modified.
 - Active/due instances are preserved by default; set `supersede_active_due=true` to supersede them with audit trace.
 - Superseded instances are represented by `current_state='superseded'` plus supersede metadata in storage.
+- Recurrence is configured on win definitions:
+  - `recurrence_type`: `one_off | daily | weekly`
+  - `recurrence_interval`: integer cadence
+  - `recurrence_days_of_week`: optional list for weekly (`0=Mon..6=Sun`)
+  - `recurrence_until`: optional stop date
+  - seed schedule is inferred from the first provided instance.

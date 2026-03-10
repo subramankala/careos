@@ -28,6 +28,7 @@ def run_once(now: datetime | None = None) -> int:
         tenant_id = str(profile.get("tenant_id", "unknown"))
         persona_raw = str(profile.get("persona_type", PersonaType.CAREGIVER_MANAGED_ELDER.value))
         persona = PersonaType(persona_raw) if persona_raw in {p.value for p in PersonaType} else PersonaType.CAREGIVER_MANAGED_ELDER
+        context.store.ensure_recurrence_instances(patient_id, evaluated_at)
         timeline = context.store.list_today(patient_id, evaluated_at)
         for item in timeline:
             if item.current_state != WinState.DUE:

@@ -153,6 +153,11 @@ class CarePlanEditService:
             updates = payload.model_dump(exclude_none=True, mode="json")
             for key in ["actor_participant_id", "reason", "supersede_active_due", "future_instances"]:
                 updates.pop(key, None)
+            if payload.future_instances:
+                seed_start = _ensure_utc(payload.future_instances[0].scheduled_start)
+                seed_end = _ensure_utc(payload.future_instances[0].scheduled_end)
+                updates["seed_start"] = seed_start
+                updates["seed_duration_minutes"] = max(int((seed_end - seed_start).total_seconds() // 60), 1)
             definition.update(updates)
 
             superseded, created = _regenerate_future_instances_inmemory(
@@ -318,11 +323,19 @@ class CarePlanEditService:
         with get_connection(self.store.database_url) as conn, conn.cursor() as cur:
             cur.execute("SELECT patient_id FROM care_plans WHERE id = %s", (care_plan_id,))
             patient_id = str(cur.fetchone()[0])
+            seed_start = _ensure_utc(payload.future_instances[0].scheduled_start) if payload.future_instances else None
+            seed_duration_minutes = None
+            if payload.future_instances:
+                seed_end = _ensure_utc(payload.future_instances[0].scheduled_end)
+                seed_duration_minutes = max(int((seed_end - seed_start).total_seconds() // 60), 1) if seed_start else 1
             cur.execute(
                 """
                 INSERT INTO win_definitions
-                (care_plan_id, category, title, instructions, why_it_matters, criticality, flexibility, temporary_start, temporary_end, default_channel_policy, escalation_policy)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                (care_plan_id, category, title, instructions, why_it_matters, criticality, flexibility,
+                 recurrence_type, recurrence_interval, recurrence_days_of_week, recurrence_until,
+                 seed_start, seed_duration_minutes,
+                 temporary_start, temporary_end, default_channel_policy, escalation_policy)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int[], %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                 RETURNING id
                 """,
                 (
@@ -333,6 +346,12 @@ class CarePlanEditService:
                     payload.definition.why_it_matters,
                     payload.definition.criticality.value,
                     payload.definition.flexibility.value,
+                    payload.definition.recurrence_type.value,
+                    payload.definition.recurrence_interval,
+                    payload.definition.recurrence_days_of_week,
+                    payload.definition.recurrence_until,
+                    seed_start,
+                    seed_duration_minutes,
                     payload.definition.temporary_start,
                     payload.definition.temporary_end,
                     json.dumps(payload.definition.default_channel_policy),
@@ -394,7 +413,9 @@ class CarePlanEditService:
             cur.execute(
                 """
                 SELECT category, title, instructions, why_it_matters, criticality, flexibility,
-                       temporary_start, temporary_end, default_channel_policy, escalation_policy
+                       recurrence_type, recurrence_interval, recurrence_days_of_week, recurrence_until,
+                       temporary_start, temporary_end, default_channel_policy, escalation_policy,
+                       seed_start, seed_duration_minutes
                 FROM win_definitions WHERE id = %s AND care_plan_id = %s
                 """,
                 (win_definition_id, care_plan_id),
@@ -409,13 +430,24 @@ class CarePlanEditService:
                 "why_it_matters": row[3],
                 "criticality": row[4],
                 "flexibility": row[5],
-                "temporary_start": row[6].isoformat() if row[6] else None,
-                "temporary_end": row[7].isoformat() if row[7] else None,
+                "recurrence_type": row[6],
+                "recurrence_interval": row[7],
+                "recurrence_days_of_week": list(row[8] or []),
+                "recurrence_until": row[9].isoformat() if row[9] else None,
+                "temporary_start": row[10].isoformat() if row[10] else None,
+                "temporary_end": row[11].isoformat() if row[11] else None,
+                "seed_start": row[14].isoformat() if row[14] else None,
+                "seed_duration_minutes": row[15],
             }
 
             updates = payload.model_dump(exclude_none=True, mode="json")
             for key in ["actor_participant_id", "reason", "supersede_active_due", "future_instances"]:
                 updates.pop(key, None)
+            if payload.future_instances:
+                seed_start = _ensure_utc(payload.future_instances[0].scheduled_start)
+                seed_end = _ensure_utc(payload.future_instances[0].scheduled_end)
+                updates["seed_start"] = seed_start
+                updates["seed_duration_minutes"] = max(int((seed_end - seed_start).total_seconds() // 60), 1)
 
             if updates:
                 set_parts = [f"{field} = %({field})s" for field in updates.keys()]
@@ -519,6 +551,12 @@ def _validate_future_instances(instances: list[WinInstanceCreate], now: datetime
     for instance in instances:
         if instance.scheduled_start.astimezone(UTC) < now_utc:
             raise ValueError("future_instances must not include past times")
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _inmemory_versions(store: InMemoryStore, care_plan_id: str) -> list[dict[str, Any]]:

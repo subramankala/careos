@@ -44,6 +44,10 @@
   3. Supersede targeted future instances.
   4. Insert replacement future instances from confirmed payload.
 - Temporary wins/medications are represented by optional `temporary_start` and `temporary_end` on `win_definitions`.
+- Recurrence model is definition-driven:
+  - `one_off`: only explicit instances are used.
+  - `daily` / `weekly`: future instances are generated from `seed_start`, `seed_duration_minutes`, and recurrence settings.
+  - Generation horizon is rolling (default 30 days) and runs during patient reads and scheduler scans.
 
 ## Known Pilot Limitations
 
