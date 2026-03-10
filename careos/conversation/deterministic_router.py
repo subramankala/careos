@@ -19,7 +19,7 @@ class DeterministicRouter(ConversationEngine):
             return CommandResult(
                 action="help",
                 text=(
-                    "Commands: schedule, next, status, whoami, "
+                    "Commands: schedule, next, status, whoami, patients, switch, use <n>, "
                     "done <item_no|win_id>, delay <item_no|win_id> <minutes>, skip <item_no|win_id>"
                 ),
             )
@@ -90,7 +90,7 @@ class DeterministicRouter(ConversationEngine):
 
         return CommandResult(
             action="fallback",
-            text="I can handle: schedule, next, status, done, delay, skip, help.",
+            text="I can handle: schedule, next, status, whoami, patients, switch, use, done, delay, skip, help.",
         )
 
     def _resolve_win_reference(self, context: ParticipantContext, reference: str) -> tuple[str | None, str | None]:

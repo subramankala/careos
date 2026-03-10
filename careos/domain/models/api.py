@@ -137,6 +137,19 @@ class ParticipantContext(BaseModel):
     patient_persona: PersonaType
 
 
+class ParticipantIdentity(BaseModel):
+    tenant_id: str
+    participant_id: str
+    participant_role: Role
+
+
+class LinkedPatientSummary(BaseModel):
+    patient_id: str
+    display_name: str
+    timezone: str
+    tenant_id: str
+
+
 class CommandResult(BaseModel):
     text: str
     action: str

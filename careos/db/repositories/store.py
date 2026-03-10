@@ -13,6 +13,8 @@ from careos.domain.enums.core import Criticality, Flexibility, PersonaType, Recu
 from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
+    LinkedPatientSummary,
+    ParticipantIdentity,
     ParticipantContext,
     ParticipantCreate,
     PatientCreate,
@@ -54,6 +56,26 @@ class Store(ABC):
 
     @abstractmethod
     def add_wins(self, care_plan_id: str, payload: AddWinsRequest) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_linked_patients(self, participant_id: str) -> list[LinkedPatientSummary]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_active_patient_context(self, participant_id: str) -> str | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_active_patient_context(self, participant_id: str, patient_id: str, selection_source: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def clear_active_patient_context(self, participant_id: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -123,6 +145,7 @@ class InMemoryStore(Store):
         self.win_to_temporary_end: dict[str, datetime | None] = {}
         self.message_idempotency: set[str] = set()
         self.default_patient_for_participant: dict[str, str] = {}
+        self.active_patient_context: dict[str, dict] = {}
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -200,7 +223,7 @@ class InMemoryStore(Store):
         created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
 
-    def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
+    def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         normalized = _normalize_phone(phone_number)
         participant = next(
             (p for p in self.participants.values() if _normalize_phone(p["phone_number"]) == normalized and p["active"]),
@@ -208,26 +231,95 @@ class InMemoryStore(Store):
         )
         if participant is None:
             return None
+        return ParticipantIdentity(
+            tenant_id=str(participant["tenant_id"]),
+            participant_id=str(participant["id"]),
+            participant_role=Role(str(participant["role"])),
+        )
 
+    def list_linked_patients(self, participant_id: str) -> list[LinkedPatientSummary]:
         linked_patient_ids = sorted(
             {
                 str(link["patient_id"])
                 for link in self.links
-                if str(link["caregiver_participant_id"]) == str(participant["id"])
+                if str(link["caregiver_participant_id"]) == str(participant_id)
             }
         )
-        if len(linked_patient_ids) != 1:
+        out: list[LinkedPatientSummary] = []
+        for patient_id in linked_patient_ids:
+            patient = self.patients.get(patient_id)
+            if patient is None:
+                continue
+            out.append(
+                LinkedPatientSummary(
+                    patient_id=patient_id,
+                    display_name=str(patient.get("display_name", patient_id)),
+                    timezone=str(patient.get("timezone", "UTC") or "UTC"),
+                    tenant_id=str(patient.get("tenant_id")),
+                )
+            )
+        return out
+
+    def get_active_patient_context(self, participant_id: str) -> str | None:
+        row = self.active_patient_context.get(str(participant_id))
+        if not row:
             return None
-        patient_id = linked_patient_ids[0]
+        patient_id = str(row["patient_id"])
+        linked = {item.patient_id for item in self.list_linked_patients(str(participant_id))}
+        if patient_id not in linked:
+            self.clear_active_patient_context(str(participant_id))
+            return None
+        return patient_id
+
+    def set_active_patient_context(self, participant_id: str, patient_id: str, selection_source: str) -> None:
+        participant = self.participants.get(str(participant_id))
+        patient = self.patients.get(str(patient_id))
+        if participant is None or patient is None:
+            raise ValueError("participant or patient not found")
+        if str(participant.get("tenant_id")) != str(patient.get("tenant_id")):
+            raise ValueError("participant and patient tenant mismatch")
+        linked = {item.patient_id for item in self.list_linked_patients(str(participant_id))}
+        if str(patient_id) not in linked:
+            raise ValueError("participant is not linked to patient")
+        now = datetime.now(UTC)
+        if str(participant_id) in self.active_patient_context:
+            selected_at = self.active_patient_context[str(participant_id)]["selected_at"]
+        else:
+            selected_at = now
+        self.active_patient_context[str(participant_id)] = {
+            "patient_id": str(patient_id),
+            "selected_at": selected_at,
+            "updated_at": now,
+            "selection_source": selection_source,
+        }
+
+    def clear_active_patient_context(self, participant_id: str) -> None:
+        self.active_patient_context.pop(str(participant_id), None)
+
+    def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
+        identity = self.resolve_participant_by_phone(phone_number)
+        if identity is None:
+            return None
+
+        linked_patient_ids = [item.patient_id for item in self.list_linked_patients(identity.participant_id)]
+        if len(linked_patient_ids) != 1:
+            active_patient_id = self.get_active_patient_context(identity.participant_id)
+            if active_patient_id is None:
+                return None
+            patient_id = active_patient_id
+        else:
+            patient_id = linked_patient_ids[0]
+            if self.get_active_patient_context(identity.participant_id) != patient_id:
+                self.set_active_patient_context(identity.participant_id, patient_id, "auto_single_link")
 
         patient = self.patients[patient_id]
         return ParticipantContext(
-            tenant_id=participant["tenant_id"],
-            participant_id=participant["id"],
-            participant_role=participant["role"],
+            tenant_id=str(identity.tenant_id),
+            participant_id=str(identity.participant_id),
+            participant_role=identity.participant_role,
             patient_id=patient_id,
-            patient_timezone=patient["timezone"],
-            patient_persona=patient["persona_type"],
+            patient_timezone=str(patient["timezone"]),
+            patient_persona=PersonaType(str(patient["persona_type"])),
         )
 
     def get_patient_profile(self, patient_id: str) -> dict | None:
@@ -565,7 +657,7 @@ class PostgresStore(Store):
         created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
 
-    def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
+    def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         normalized = _normalize_phone(phone_number)
         participant_sql = """
         SELECT p.id, p.tenant_id, p.role
@@ -581,22 +673,101 @@ class PostgresStore(Store):
             if participant_row is None:
                 return None
             participant = _row_dict(cur, participant_row)
-
-            cur.execute(
-                """
-                SELECT patient_id
-                FROM caregiver_patient_links
-                WHERE caregiver_participant_id = %s
-                ORDER BY created_at ASC
-                """,
-                (participant["id"],),
+            return ParticipantIdentity(
+                tenant_id=str(participant["tenant_id"]),
+                participant_id=str(participant["id"]),
+                participant_role=Role(str(participant["role"])),
             )
-            linked = [str(row[0]) for row in cur.fetchall()]
-            unique_linked = sorted(set(linked))
-            if len(unique_linked) != 1:
-                return None
-            patient_id = unique_linked[0]
 
+    def list_linked_patients(self, participant_id: str) -> list[LinkedPatientSummary]:
+        sql = """
+        SELECT DISTINCT pa.id AS patient_id, pa.display_name, pa.timezone, pa.tenant_id
+        FROM caregiver_patient_links cpl
+        JOIN patients pa ON pa.id = cpl.patient_id
+        WHERE cpl.caregiver_participant_id = %s
+        ORDER BY pa.display_name ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (participant_id,))
+            rows: list[LinkedPatientSummary] = []
+            for row in cur.fetchall():
+                rows.append(
+                    LinkedPatientSummary(
+                        patient_id=str(row[0]),
+                        display_name=str(row[1]),
+                        timezone=str(row[2] or "UTC"),
+                        tenant_id=str(row[3]),
+                    )
+                )
+            return rows
+
+    def get_active_patient_context(self, participant_id: str) -> str | None:
+        sql = """
+        SELECT pac.patient_id
+        FROM participant_active_context pac
+        JOIN caregiver_patient_links cpl
+          ON cpl.caregiver_participant_id = pac.participant_id
+         AND cpl.patient_id = pac.patient_id
+        WHERE pac.participant_id = %s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (participant_id,))
+            row = cur.fetchone()
+            return str(row[0]) if row else None
+
+    def set_active_patient_context(self, participant_id: str, patient_id: str, selection_source: str) -> None:
+        validate_sql = """
+        SELECT 1
+        FROM participants p
+        JOIN caregiver_patient_links cpl ON cpl.caregiver_participant_id = p.id
+        JOIN patients pa ON pa.id = cpl.patient_id
+        WHERE p.id = %s
+          AND pa.id = %s
+          AND p.active = true
+          AND p.tenant_id = pa.tenant_id
+        LIMIT 1
+        """
+        upsert_sql = """
+        INSERT INTO participant_active_context (participant_id, patient_id, selection_source)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (participant_id)
+        DO UPDATE SET
+          patient_id = EXCLUDED.patient_id,
+          updated_at = now(),
+          selection_source = EXCLUDED.selection_source
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(validate_sql, (participant_id, patient_id))
+            if cur.fetchone() is None:
+                raise ValueError("participant is not authorized for patient context")
+            cur.execute(upsert_sql, (participant_id, patient_id, selection_source))
+
+    def clear_active_patient_context(self, participant_id: str) -> None:
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM participant_active_context WHERE participant_id = %s", (participant_id,))
+
+    def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
+        identity = self.resolve_participant_by_phone(phone_number)
+        if identity is None:
+            return None
+
+        linked = self.list_linked_patients(identity.participant_id)
+        if len(linked) != 1:
+            active_patient_id = self.get_active_patient_context(identity.participant_id)
+            if active_patient_id is None:
+                return None
+            candidate_ids = {item.patient_id for item in linked}
+            if active_patient_id not in candidate_ids:
+                self.clear_active_patient_context(identity.participant_id)
+                return None
+            patient_id = active_patient_id
+        else:
+            patient_id = linked[0].patient_id
+            if self.get_active_patient_context(identity.participant_id) != patient_id:
+                self.set_active_patient_context(identity.participant_id, patient_id, "auto_single_link")
+
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT timezone, persona_type FROM patients WHERE id = %s",
                 (patient_id,),
@@ -606,9 +777,9 @@ class PostgresStore(Store):
                 return None
             patient_timezone, patient_persona = patient
             return ParticipantContext(
-                tenant_id=str(participant["tenant_id"]),
-                participant_id=str(participant["id"]),
-                participant_role=Role(participant["role"]),
+                tenant_id=str(identity.tenant_id),
+                participant_id=str(identity.participant_id),
+                participant_role=identity.participant_role,
                 patient_id=str(patient_id),
                 patient_timezone=str(patient_timezone),
                 patient_persona=PersonaType(patient_persona),

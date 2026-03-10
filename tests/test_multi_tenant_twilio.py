@@ -225,3 +225,187 @@ def test_whoami_returns_active_context() -> None:
     assert response.status_code == 200
     assert "You are patient." in response.text
     assert f"Active patient: {patient_id}" in response.text
+
+
+def test_multi_patient_requires_use_selection_then_routes_correctly() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "MultiSelect", "type": "family", "timezone": "Asia/Kolkata", "status": "active"},
+    ).json()
+
+    caregiver = client.post(
+        "/participants",
+        json={
+            "tenant_id": tenant["id"],
+            "role": "caregiver",
+            "display_name": "Shared Caregiver",
+            "phone_number": "whatsapp:+15550003333",
+            "preferred_channel": "whatsapp",
+            "preferred_language": "en",
+            "active": True,
+        },
+    ).json()
+
+    patient_a = client.post(
+        "/patients",
+        json={
+            "tenant_id": tenant["id"],
+            "display_name": "Father",
+            "timezone": "Asia/Kolkata",
+            "persona_type": "caregiver_managed_elder",
+        },
+    ).json()
+    patient_b = client.post(
+        "/patients",
+        json={
+            "tenant_id": tenant["id"],
+            "display_name": "Mother",
+            "timezone": "Asia/Kolkata",
+            "persona_type": "caregiver_managed_elder",
+        },
+    ).json()
+    client.post("/caregiver-links", json={"caregiver_participant_id": caregiver["id"], "patient_id": patient_a["id"]})
+    client.post("/caregiver-links", json={"caregiver_participant_id": caregiver["id"], "patient_id": patient_b["id"]})
+
+    plan_a = client.post(
+        "/care-plans",
+        json={
+            "patient_id": patient_a["id"],
+            "created_by_participant_id": caregiver["id"],
+            "status": "active",
+            "version": 1,
+            "source_type": "manual",
+        },
+    ).json()
+    plan_b = client.post(
+        "/care-plans",
+        json={
+            "patient_id": patient_b["id"],
+            "created_by_participant_id": caregiver["id"],
+            "status": "active",
+            "version": 1,
+            "source_type": "manual",
+        },
+    ).json()
+
+    start = datetime.now(UTC).replace(second=0, microsecond=0) + timedelta(minutes=5)
+    end = start + timedelta(minutes=20)
+    client.post(
+        f"/care-plans/{plan_a['id']}/wins",
+        json={
+            "patient_id": patient_a["id"],
+            "definitions": [
+                {
+                    "category": "medication",
+                    "title": "Father Med",
+                    "instructions": "Take",
+                    "criticality": "high",
+                    "flexibility": "rigid",
+                }
+            ],
+            "instances": [{"scheduled_start": start.isoformat(), "scheduled_end": end.isoformat()}],
+        },
+    )
+    client.post(
+        f"/care-plans/{plan_b['id']}/wins",
+        json={
+            "patient_id": patient_b["id"],
+            "definitions": [
+                {
+                    "category": "medication",
+                    "title": "Mother Med",
+                    "instructions": "Take",
+                    "criticality": "high",
+                    "flexibility": "rigid",
+                }
+            ],
+            "instances": [{"scheduled_start": start.isoformat(), "scheduled_end": end.isoformat()}],
+        },
+    )
+
+    no_context = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550003333", "Body": "schedule", "MessageSid": "SM_multi_1"},
+    )
+    assert no_context.status_code == 200
+    assert "Multiple patients are linked to this number." in no_context.text
+    assert "Reply: use <number>" in no_context.text
+
+    select_two = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550003333", "Body": "use 2", "MessageSid": "SM_multi_2"},
+    )
+    assert select_two.status_code == 200
+    assert "Switched to Mother" in select_two.text
+
+    schedule_b = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550003333", "Body": "schedule", "MessageSid": "SM_multi_3"},
+    )
+    assert "Mother Med" in schedule_b.text
+    assert "Father Med" not in schedule_b.text
+
+    select_one = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550003333", "Body": "use 1", "MessageSid": "SM_multi_4"},
+    )
+    assert select_one.status_code == 200
+    assert "Switched to Father" in select_one.text
+
+    schedule_a = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550003333", "Body": "schedule", "MessageSid": "SM_multi_5"},
+    )
+    assert "Father Med" in schedule_a.text
+    assert "Mother Med" not in schedule_a.text
+
+
+def test_use_unlinked_patient_id_is_blocked() -> None:
+    settings.validate_twilio_signature = False
+    tenant_a = client.post(
+        "/tenants",
+        json={"name": "TenantA", "type": "family", "timezone": "UTC", "status": "active"},
+    ).json()
+    tenant_b = client.post(
+        "/tenants",
+        json={"name": "TenantB", "type": "family", "timezone": "UTC", "status": "active"},
+    ).json()
+    caregiver = client.post(
+        "/participants",
+        json={
+            "tenant_id": tenant_a["id"],
+            "role": "caregiver",
+            "display_name": "Caregiver A",
+            "phone_number": "whatsapp:+15550004444",
+            "preferred_channel": "whatsapp",
+            "preferred_language": "en",
+            "active": True,
+        },
+    ).json()
+    patient_a = client.post(
+        "/patients",
+        json={
+            "tenant_id": tenant_a["id"],
+            "display_name": "Patient A",
+            "timezone": "UTC",
+            "persona_type": "caregiver_managed_elder",
+        },
+    ).json()
+    patient_b = client.post(
+        "/patients",
+        json={
+            "tenant_id": tenant_b["id"],
+            "display_name": "Patient B",
+            "timezone": "UTC",
+            "persona_type": "caregiver_managed_elder",
+        },
+    ).json()
+    client.post("/caregiver-links", json={"caregiver_participant_id": caregiver["id"], "patient_id": patient_a["id"]})
+
+    blocked = client.post(
+        "/twilio/webhook",
+        data={"From": "whatsapp:+15550004444", "Body": f"use {patient_b['id']}", "MessageSid": "SM_multi_block"},
+    )
+    assert blocked.status_code == 200
+    assert "Invalid selection." in blocked.text

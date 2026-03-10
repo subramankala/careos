@@ -30,6 +30,15 @@ psql "$CAREOS_DATABASE_URL" -c "SELECT id, name FROM tenants ORDER BY created_at
 psql "$CAREOS_DATABASE_URL" -c "SELECT id, display_name, tenant_id FROM patients ORDER BY created_at DESC;"
 ```
 
+Apply all migrations including active-context support:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
+```
+
 ## Onboard New Patient + WhatsApp Caregiver
 
 1) Create patient:
@@ -243,6 +252,25 @@ Send `whoami` on WhatsApp to see:
 - participant role
 - active patient id
 - timezone
+
+For caregivers with multiple linked patients:
+- `patients` lists numbered choices
+- `use 1` (or `use <patient_id>`) sets active context
+- `switch` shows the same list again
+
+Inspect active contexts in DB:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -c "
+SELECT pac.participant_id, p.display_name AS participant_name,
+       pac.patient_id, pa.display_name AS patient_name,
+       pac.selection_source, pac.selected_at, pac.updated_at
+FROM participant_active_context pac
+JOIN participants p ON p.id = pac.participant_id
+JOIN patients pa ON pa.id = pac.patient_id
+ORDER BY pac.updated_at DESC;
+"
+```
 
 ## Enable Proactive WhatsApp Push (Scheduler)
 

@@ -1,6 +1,6 @@
 # CareOS Lite Implemented Spec
 
-Last updated: 2026-03-10
+Last updated: 2026-03-11
 
 This document describes what is implemented in the current codebase and VM deployment, not planned scope.
 
@@ -49,6 +49,7 @@ Conversation engine is behind FastAPI. Twilio never calls conversation engine di
 - `patients`
 - `participants`
 - `caregiver_patient_links`
+- `participant_active_context`
 
 ### Care orchestration
 
@@ -124,6 +125,9 @@ Conversation engine is behind FastAPI. Twilio never calls conversation engine di
 - `next`
 - `status`
 - `whoami` / `profile`
+- `patients`
+- `switch`
+- `use <n|patient_id>`
 - `done <item_no|win_id>`
 - `skip <item_no|win_id>`
 - `delay <item_no|win_id> <minutes>`
@@ -131,6 +135,7 @@ Conversation engine is behind FastAPI. Twilio never calls conversation engine di
 Behavior details:
 
 - `schedule` is patient-local timezone, full list, numbered items.
+- multi-patient caregivers must explicitly select context (`use`) when no active context exists.
 - `done/skip/delay` accept list number references from schedule output.
 
 ## 6) Identity Resolution Rules
@@ -138,11 +143,13 @@ Behavior details:
 Inbound sender phone is normalized and matched to active participant.
 
 Current fail-closed rule:
-- participant must map to exactly one linked patient for webhook context.
-- if no match or ambiguous mapping, webhook returns onboarding guidance.
+- if participant has multiple linked patients and no active context, command execution is blocked until explicit `use`.
+- if no participant match, webhook returns onboarding guidance.
+- if active context becomes invalid (no longer linked), context is cleared and reselection is required.
 
-Operational implication:
-- one active participant phone should be linked to one active patient context for inbound command handling.
+Active context persistence:
+- stored in `participant_active_context`.
+- no automatic expiry in current implementation.
 
 ## 7) Recurrence and Scheduling Rules
 

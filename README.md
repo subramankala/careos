@@ -59,6 +59,7 @@ cp .env.example .env
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -97,6 +98,9 @@ Apply:
 
 ```bash
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 ```
 
 ## Core endpoints
@@ -120,6 +124,12 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 - `POST /wins/{id}/skip`
 - `POST /wins/{id}/escalate`
 - `GET /patients/{id}/adherence-summary`
+
+WhatsApp command additions for multi-patient caregiver flow:
+- `patients`
+- `switch`
+- `use <n|patient_id>`
+- `whoami` (now reports active context status)
 
 ## Architecture doc
 
