@@ -132,3 +132,75 @@ def test_schedule_message_uses_patient_timezone() -> None:
     xml = response.text
     assert "07:00" in xml
     assert "01:30" not in xml
+
+
+def test_schedule_lists_all_items_with_numbers() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "Numbered", "type": "family", "timezone": "UTC", "status": "active"},
+    ).json()
+    patient_id, _, plan_id = _seed_patient(tenant["id"], "whatsapp:+15550008888", "Dose 1")
+
+    start = datetime.now(UTC).replace(second=0, microsecond=0)
+    end = start + timedelta(minutes=30)
+    definitions = []
+    for index in range(2, 13):
+        definitions.append(
+            {
+                "category": "medication",
+                "title": f"Dose {index}",
+                "instructions": "Take medication",
+                "criticality": "medium",
+                "flexibility": "windowed",
+            }
+        )
+
+    client.post(
+        f"/care-plans/{plan_id}/wins",
+        json={
+            "patient_id": patient_id,
+            "definitions": definitions,
+            "instances": [{"scheduled_start": start.isoformat(), "scheduled_end": end.isoformat()}],
+        },
+    )
+
+    response = client.post(
+        "/twilio/webhook",
+        data={
+            "From": "whatsapp:+15550008888",
+            "To": "whatsapp:+15558889999",
+            "Body": "schedule",
+            "MessageSid": "SM_numbered",
+        },
+    )
+    assert response.status_code == 200
+    xml = response.text
+    assert "1. " in xml
+    assert "11. " in xml
+    assert "12. " in xml
+
+
+def test_done_command_accepts_schedule_item_number() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "DoneNumber", "type": "family", "timezone": "UTC", "status": "active"},
+    ).json()
+    patient_id, _, _ = _seed_patient(tenant["id"], "whatsapp:+15550007777", "Numbered Done")
+
+    done_response = client.post(
+        "/twilio/webhook",
+        data={
+            "From": "whatsapp:+15550007777",
+            "To": "whatsapp:+15558889999",
+            "Body": "done 1",
+            "MessageSid": "SM_done_number",
+        },
+    )
+    assert done_response.status_code == 200
+    assert "Marked 1 as completed." in done_response.text
+
+    status = client.get(f"/patients/{patient_id}/status")
+    assert status.status_code == 200
+    assert status.json()["completed_count"] >= 1
