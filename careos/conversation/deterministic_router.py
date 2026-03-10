@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from careos.conversation.engine_base import ConversationEngine
 from careos.domain.models.api import CommandResult, ParticipantContext
 from careos.services.win_service import WinService
@@ -23,10 +25,12 @@ class DeterministicRouter(ConversationEngine):
             today = self.win_service.today(context.patient_id)
             if not today.timeline:
                 return CommandResult(action="schedule", text="No wins are scheduled for today.")
+            tz = ZoneInfo(today.timezone)
             lines = [f"Schedule ({today.date}):"]
             for item in today.timeline[:10]:
+                local_time = item.scheduled_start.astimezone(tz).strftime("%H:%M")
                 lines.append(
-                    f"- {item.win_instance_id[:8]} {item.scheduled_start.strftime('%H:%M')} {item.title} [{item.current_state.value}]"
+                    f"- {item.win_instance_id[:8]} {local_time} {item.title} [{item.current_state.value}]"
                 )
             return CommandResult(action="schedule", text="\n".join(lines))
 

@@ -9,13 +9,13 @@ from careos.settings import settings
 client = TestClient(app)
 
 
-def _seed_patient(tenant_id: str, phone_number: str, title: str) -> tuple[str, str, str]:
+def _seed_patient(tenant_id: str, phone_number: str, title: str, timezone: str = "UTC") -> tuple[str, str, str]:
     patient = client.post(
         "/patients",
         json={
             "tenant_id": tenant_id,
             "display_name": title,
-            "timezone": "UTC",
+            "timezone": timezone,
             "primary_language": "en",
             "persona_type": "caregiver_managed_elder",
             "risk_level": "medium",
@@ -109,3 +109,26 @@ def test_three_patients_same_business_number_no_crosstalk() -> None:
         assert expected_title in xml
         unexpected = {"Aspirin", "Metoprolol", "Physio Walk"} - {expected_title}
         assert all(name not in xml for name in unexpected)
+
+
+def test_schedule_message_uses_patient_timezone() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "TZ", "type": "family", "timezone": "Asia/Kolkata", "status": "active"},
+    ).json()
+    _seed_patient(tenant["id"], "whatsapp:+15550009999", "TZ med", timezone="Asia/Kolkata")
+
+    response = client.post(
+        "/twilio/webhook",
+        data={
+            "From": "whatsapp:+15550009999",
+            "To": "whatsapp:+15558889999",
+            "Body": "schedule",
+            "MessageSid": "SM_tz_test",
+        },
+    )
+    assert response.status_code == 200
+    xml = response.text
+    assert "07:00" in xml
+    assert "01:30" not in xml

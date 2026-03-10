@@ -29,10 +29,14 @@ class WinService:
     def next_text(self, patient_id: str, at: datetime | None = None) -> str:
         now = at or datetime.now(UTC)
         self.store.ensure_recurrence_instances(patient_id, now)
+        profile = self.store.get_patient_profile(patient_id) or {"timezone": "UTC"}
+        timezone_name = str(profile.get("timezone", "UTC"))
+        timezone = ZoneInfo(timezone_name)
         item = self.store.next_item(patient_id, now)
         if item is None:
             return "No pending wins. Everything due today is handled."
-        return f"Next: {item.scheduled_start.strftime('%H:%M')} {item.title} [{item.current_state.value}]"
+        local_time = item.scheduled_start.astimezone(timezone).strftime("%H:%M")
+        return f"Next: {local_time} {item.title} [{item.current_state.value}]"
 
     def status(self, patient_id: str, at: datetime | None = None) -> PatientStatusResponse:
         now = at or datetime.now(UTC)
