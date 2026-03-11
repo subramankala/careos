@@ -61,6 +61,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -90,6 +91,7 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_VALIDATE_TWILIO_SIGNATURE=true|false` (default `true`)
 - `CAREOS_PUBLIC_WEBHOOK_BASE_URL` (optional; recommended in production)
 - `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default `24`; WhatsApp onboarding session resume window)
+- `CAREOS_ONBOARDING_VERIFICATION_TTL_HOURS` (default `48`; caregiver verification request expiry)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
 - Full template: [.env.example](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/.env.example)
@@ -104,6 +106,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
 ```
 
 ## Core endpoints
@@ -137,7 +140,9 @@ WhatsApp command additions for multi-patient caregiver flow:
 WhatsApp onboarding (unknown/incomplete sender):
 - entry asks: `myself` or `someone I care for`
 - self flow captures patient name and completes profile creation
-- caregiver flow captures caregiver name, patient name, patient phone, relationship and ends in handoff-pending state
+- caregiver flow captures caregiver name, patient name, patient phone, relationship and enters verification-pending state
+- patient must reply `APPROVE <code>` or `DECLINE <code>` before caregiver link is activated
+- caregiver can use `status`, `resend`, `cancel` while verification is pending
 
 ## Architecture doc
 

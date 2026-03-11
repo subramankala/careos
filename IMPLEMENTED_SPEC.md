@@ -251,9 +251,9 @@ Current runtime status:
 - OCR ingestion flow not enabled.
 - No active OpenClaw conversational orchestration in runtime path.
 - Scheduler currently uses configured patient allowlist (`CAREOS_SCHEDULER_PATIENT_IDS`) for pilot control.
-- Caregiver onboarding currently marks `handoff_pending` but does not enforce patient approval workflow yet.
+- Verification is based on WhatsApp phone ownership and approval code; no secondary identity check (OTP/KYC) yet.
 
-## 16) WhatsApp Onboarding State Machine (Phase A)
+## 16) WhatsApp Onboarding + Verification (Phase B)
 
 Unknown or incomplete senders now enter a structured onboarding wizard over WhatsApp.
 
@@ -269,12 +269,19 @@ Supported entry branches:
 State flow:
 - `choose_role`
 - `self_patient_name` -> `completed`
-- `caregiver_name` -> `caregiver_patient_name` -> `caregiver_patient_phone` -> `caregiver_relationship` -> `handoff_pending`
+- `caregiver_name` -> `caregiver_patient_name` -> `caregiver_patient_phone` -> `caregiver_relationship` -> `verification_pending` -> (`completed` on approved/declined/canceled/expired)
 
 Resume/expiration:
 - active sessions resume from the last saved state
 - expiration uses `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default 24 hours)
 - expired sessions are marked expired and restart at `choose_role`
+
+Verification request model:
+- table: `caregiver_verification_requests`
+- statuses: `pending`, `approved`, `declined`, `canceled`, `expired`
+- patient receives outbound prompt: `APPROVE <code>` or `DECLINE <code>`
+- caregiver commands while pending: `status`, `resend`, `cancel`
+- caregiver-patient link is activated only after patient `APPROVE`
 
 ## 15) Documentation Sync Policy
 

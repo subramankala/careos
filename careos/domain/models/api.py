@@ -161,6 +161,26 @@ class OnboardingSession(BaseModel):
     completion_note: str = ""
 
 
+class CaregiverVerificationRequest(BaseModel):
+    id: str
+    tenant_id: str
+    caregiver_participant_id: str
+    patient_id: str
+    patient_participant_id: str
+    caregiver_name: str
+    caregiver_phone_number: str
+    patient_name: str
+    patient_phone_number: str
+    relationship: str
+    approval_code: str
+    status: str
+    expires_at: datetime
+    send_attempt_count: int = 0
+    last_sent_at: datetime | None = None
+    resolved_at: datetime | None = None
+    resolution_note: str = ""
+
+
 class CommandResult(BaseModel):
     text: str
     action: str

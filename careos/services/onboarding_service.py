@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from careos.db.repositories.store import Store
 from careos.domain.enums.core import PersonaType, Role
-from careos.domain.models.api import ParticipantCreate, ParticipantIdentity, PatientCreate, TenantCreate
+from careos.domain.models.api import CaregiverVerificationRequest, ParticipantCreate, ParticipantIdentity, PatientCreate, TenantCreate
+from careos.integrations.twilio.sender import TwilioWhatsAppSender
 from careos.settings import settings
 
 
@@ -20,8 +22,17 @@ class OnboardingService:
         identity: ParticipantIdentity | None,
         linked_patient_count: int,
     ) -> str | None:
+        verification_reply = self._handle_verification_message(sender_phone=sender_phone, body=body)
+        if verification_reply is not None:
+            return verification_reply
+
         if identity is not None and linked_patient_count > 0:
             return None
+
+        if identity is not None and linked_patient_count == 0:
+            pending = self.store.get_pending_verification_for_caregiver(identity.participant_id)
+            if pending is not None:
+                return self._handle_caregiver_pending(sender_phone=sender_phone, body=body, request=pending)
 
         now = datetime.now(UTC)
         session = self.store.get_onboarding_session(sender_phone)
@@ -102,25 +113,168 @@ class OnboardingService:
             if not text:
                 return "Please share relationship to patient."
             data["relationship"] = text.strip()[:40]
-            note = self._complete_caregiver_onboarding(sender_phone, data, identity)
+            pending = self._start_caregiver_verification(sender_phone, data, identity)
+            if pending is None:
+                self._save_session(
+                    sender_phone,
+                    state="verification_failed",
+                    status="completed",
+                    data=data,
+                    completion_note="verification_start_failed",
+                )
+                return "Could not start verification for this patient phone. Reply 'hi' to restart onboarding."
+
+            data["verification_request_id"] = pending.id
             self._save_session(
                 sender_phone,
-                state="handoff_pending",
-                status="handoff_pending",
+                state="verification_pending",
+                status="active",
                 data=data,
-                completion_note=note,
+                completion_note="",
             )
-            patient_name = data.get("patient_name", "the patient")
-            return (
-                f"Saved. {patient_name} is added. "
-                "Handoff pending: ask patient to message CareOS from their WhatsApp."
-            )
+            return self._caregiver_waiting_prompt(pending)
 
-        if session.state in {"completed", "handoff_pending"}:
+        if session.state == "verification_pending":
+            request_id = str(data.get("verification_request_id") or "")
+            request = self.store.get_verification_request(request_id) if request_id else None
+            if request is None:
+                self._save_session(
+                    sender_phone,
+                    state="verification_failed",
+                    status="completed",
+                    data=data,
+                    completion_note="verification_request_missing",
+                )
+                return "Verification request not found. Reply 'hi' to restart onboarding."
+            return self._handle_caregiver_pending(sender_phone=sender_phone, body=body, request=request)
+
+        if session.state in {"completed", "handoff_pending", "verification_failed"}:
             return "Onboarding already completed. Reply 'schedule' or 'help'."
 
         self._save_session(sender_phone, state="choose_role", status="active", data={})
         return self._role_prompt()
+
+    def _handle_verification_message(self, *, sender_phone: str, body: str) -> str | None:
+        command, code = self._parse_verification_reply(body)
+        requests = self.store.list_pending_verifications_for_patient_phone(sender_phone)
+        if not requests:
+            if command in {"approve", "decline"}:
+                return "No pending caregiver approval request for this number."
+            return None
+
+        if command is None:
+            if len(requests) == 1:
+                req = requests[0]
+                return (
+                    f"Caregiver approval pending for {req.patient_name}. "
+                    f"Reply APPROVE {req.approval_code} or DECLINE {req.approval_code}."
+                )
+            return "Multiple approval requests pending. Reply APPROVE <code> or DECLINE <code>."
+
+        chosen = self._choose_verification_request(requests, code)
+        if chosen is None:
+            return "Invalid approval code. Reply APPROVE <code> or DECLINE <code>."
+
+        if command == "approve":
+            self.store.update_verification_request(
+                chosen.id,
+                status="approved",
+                resolved_at=datetime.now(UTC),
+                resolution_note="approved_by_patient",
+            )
+            self.store.link_caregiver(chosen.caregiver_participant_id, chosen.patient_id)
+            self.store.link_caregiver(chosen.patient_participant_id, chosen.patient_id)
+            self.store.set_active_patient_context(chosen.caregiver_participant_id, chosen.patient_id, "verification_approved")
+            self.store.save_onboarding_session(
+                phone_number=chosen.caregiver_phone_number,
+                state="completed",
+                status="completed",
+                data={"verification_request_id": chosen.id},
+                expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
+                completion_note="verification_approved",
+            )
+            caregiver_msg = (
+                f"Approved by {chosen.patient_name}. Caregiver access is now active. "
+                "Reply 'patients' to continue."
+            )
+            self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
+            return "Approved. Caregiver has been informed."
+
+        self.store.update_verification_request(
+            chosen.id,
+            status="declined",
+            resolved_at=datetime.now(UTC),
+            resolution_note="declined_by_patient",
+        )
+        self.store.save_onboarding_session(
+            phone_number=chosen.caregiver_phone_number,
+            state="completed",
+            status="completed",
+            data={"verification_request_id": chosen.id},
+            expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
+            completion_note="verification_declined",
+        )
+        caregiver_msg = f"Declined by {chosen.patient_name}. No caregiver link was created."
+        self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
+        return "Declined. Caregiver has been informed."
+
+    def _handle_caregiver_pending(self, *, sender_phone: str, body: str, request: CaregiverVerificationRequest) -> str:
+        now = datetime.now(UTC)
+        if request.status != "pending":
+            if request.status == "approved":
+                return "Approved. You can now use 'patients' and continue setup."
+            if request.status == "declined":
+                return "Declined by patient. No link was created."
+            if request.status == "canceled":
+                return "Verification request was canceled. Reply 'hi' to start again."
+            if request.status == "expired":
+                return "Verification request expired. Reply 'hi' to restart onboarding."
+
+        if request.expires_at <= now:
+            self.store.update_verification_request(
+                request.id,
+                status="expired",
+                resolved_at=now,
+                resolution_note="expired",
+            )
+            return "Verification request expired. Reply 'hi' to restart onboarding."
+
+        normalized = body.strip().lower()
+        if normalized in {"status", "verification", "pending"}:
+            return self._caregiver_waiting_prompt(request)
+
+        if normalized == "cancel":
+            self.store.update_verification_request(
+                request.id,
+                status="canceled",
+                resolved_at=now,
+                resolution_note="canceled_by_caregiver",
+            )
+            self.store.save_onboarding_session(
+                phone_number=sender_phone,
+                state="completed",
+                status="completed",
+                data={"verification_request_id": request.id},
+                expires_at=now + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
+                completion_note="verification_canceled",
+            )
+            return "Verification canceled. No caregiver link was created."
+
+        if normalized == "resend":
+            sent = self._send_verification_prompt(request)
+            status_text = "sent" if sent else "queued"
+            updated = self.store.update_verification_request(
+                request.id,
+                send_attempt_count=request.send_attempt_count + 1,
+                last_sent_at=now,
+                resolution_note=f"resent_{status_text}",
+            )
+            return (
+                f"Verification {status_text} to {updated.patient_phone_number}. "
+                "Reply STATUS, RESEND, or CANCEL."
+            )
+
+        return self._caregiver_waiting_prompt(request)
 
     def _complete_self_onboarding(
         self,
@@ -172,12 +326,12 @@ class OnboardingService:
         self.store.link_caregiver(participant_id, str(patient["id"]))
         self.store.set_active_patient_context(participant_id, str(patient["id"]), "onboarding_self")
 
-    def _complete_caregiver_onboarding(
+    def _start_caregiver_verification(
         self,
         sender_phone: str,
         data: dict,
         identity: ParticipantIdentity | None,
-    ) -> str:
+    ) -> CaregiverVerificationRequest | None:
         caregiver_name = str(data.get("caregiver_name") or "Caregiver")
         patient_name = str(data.get("patient_name") or "Patient")
         patient_phone = str(data.get("patient_phone") or "")
@@ -210,6 +364,10 @@ class OnboardingService:
             )
             caregiver_participant_id = str(caregiver["id"])
 
+        existing_pending = self.store.get_pending_verification_for_caregiver(caregiver_participant_id)
+        if existing_pending is not None:
+            return existing_pending
+
         patient = self.store.create_patient(
             PatientCreate(
                 tenant_id=tenant_id,
@@ -222,11 +380,14 @@ class OnboardingService:
             )
         )
         patient_id = str(patient["id"])
-        self.store.link_caregiver(caregiver_participant_id, patient_id)
-        self.store.set_active_patient_context(caregiver_participant_id, patient_id, "onboarding_caregiver")
 
-        existing_patient_phone_participant = self.store.find_participant_record_by_phone(patient_phone)
-        if existing_patient_phone_participant is None:
+        existing_patient_participant = self.store.find_participant_record_by_phone(patient_phone)
+        if existing_patient_participant is not None and str(existing_patient_participant["tenant_id"]) != tenant_id:
+            return None
+
+        if existing_patient_participant is not None:
+            patient_participant_id = str(existing_patient_participant["id"])
+        else:
             patient_participant = self.store.create_participant(
                 ParticipantCreate(
                     tenant_id=tenant_id,
@@ -238,10 +399,83 @@ class OnboardingService:
                     active=True,
                 )
             )
-            self.store.link_caregiver(str(patient_participant["id"]), patient_id)
-            return f"handoff_pending:{relationship}:auto_patient_participant_created"
+            patient_participant_id = str(patient_participant["id"])
 
-        return f"handoff_pending:{relationship}:patient_phone_already_registered"
+        ttl_hours = max(int(settings.onboarding_verification_ttl_hours), 1)
+        request = self.store.create_caregiver_verification_request(
+            tenant_id=tenant_id,
+            caregiver_participant_id=caregiver_participant_id,
+            patient_id=patient_id,
+            patient_participant_id=patient_participant_id,
+            caregiver_name=caregiver_name,
+            caregiver_phone_number=self._normalize_phone_input(sender_phone) or sender_phone,
+            patient_name=patient_name,
+            patient_phone_number=patient_phone,
+            relationship=relationship,
+            approval_code=self._approval_code(),
+            expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
+        )
+        sent = self._send_verification_prompt(request)
+        now = datetime.now(UTC)
+        self.store.update_verification_request(
+            request.id,
+            send_attempt_count=1,
+            last_sent_at=now,
+            resolution_note="initial_send_success" if sent else "initial_send_not_configured",
+        )
+        return self.store.get_verification_request(request.id)
+
+    def _send_verification_prompt(self, request: CaregiverVerificationRequest) -> bool:
+        body = (
+            f"CareOS request: {request.caregiver_name} asks caregiver access for {request.patient_name}. "
+            f"Reply APPROVE {request.approval_code} or DECLINE {request.approval_code}."
+        )
+        return self._send_whatsapp_by_phone(request.patient_phone_number, body)
+
+    def _send_whatsapp_by_phone(self, phone_number: str, body: str) -> bool:
+        if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_whatsapp_number:
+            return False
+        try:
+            sender = TwilioWhatsAppSender(
+                account_sid=settings.twilio_account_sid,
+                auth_token=settings.twilio_auth_token,
+                from_number=settings.twilio_whatsapp_number,
+            )
+            sender.send_text(to_number=phone_number, body=body)
+            return True
+        except Exception:
+            return False
+
+    def _choose_verification_request(
+        self, requests: list[CaregiverVerificationRequest], code: str | None
+    ) -> CaregiverVerificationRequest | None:
+        if code:
+            for request in requests:
+                if request.approval_code.lower() == code.lower():
+                    return request
+            return None
+        if len(requests) == 1:
+            return requests[0]
+        return None
+
+    def _parse_verification_reply(self, body: str) -> tuple[str | None, str | None]:
+        parts = body.strip().split()
+        if not parts:
+            return None, None
+        cmd = parts[0].lower()
+        if cmd not in {"approve", "decline"}:
+            return None, None
+        code = parts[1].strip() if len(parts) > 1 else None
+        return cmd, code
+
+    def _approval_code(self) -> str:
+        return uuid4().hex[:6].upper()
+
+    def _caregiver_waiting_prompt(self, request: CaregiverVerificationRequest) -> str:
+        return (
+            f"Verification pending for {request.patient_name} ({request.patient_phone_number}). "
+            "Reply STATUS, RESEND, or CANCEL."
+        )
 
     def _save_session(
         self,

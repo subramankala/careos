@@ -43,7 +43,7 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
     assert "No wins are scheduled for today." in schedule
 
 
-def test_unknown_phone_caregiver_onboarding_reaches_handoff_pending() -> None:
+def test_unknown_phone_caregiver_onboarding_reaches_verification_pending() -> None:
     settings.validate_twilio_signature = False
     sender = "whatsapp:+15556660002"
 
@@ -54,12 +54,12 @@ def test_unknown_phone_caregiver_onboarding_reaches_handoff_pending() -> None:
     _twilio(sender, "+15556667777", "SM_onboard_care_5")
     done = _twilio(sender, "son", "SM_onboard_care_6")
 
-    assert "Handoff pending" in done
+    assert "Verification pending" in done
 
     session = context.store.get_onboarding_session(sender)
     assert session is not None
-    assert session.state == "handoff_pending"
-    assert session.status == "handoff_pending"
+    assert session.state == "verification_pending"
+    assert session.status == "active"
 
 
 def test_incomplete_user_enters_onboarding_and_resume_state() -> None:

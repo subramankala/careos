@@ -38,10 +38,12 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
 ```
 
 WhatsApp onboarding session TTL is controlled by:
 - `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default: `24`)
+- `CAREOS_ONBOARDING_VERIFICATION_TTL_HOURS` (default: `48`)
 
 ## Onboard New Patient + WhatsApp Caregiver
 
@@ -85,7 +87,27 @@ For an unknown caregiver sender number, message:
 6. `<relationship>`
 
 Expected completion response:
-- `Saved. <patient> is added. Handoff pending: ask patient to message CareOS from their WhatsApp.`
+- `Verification pending for <patient>. Reply STATUS, RESEND, or CANCEL.`
+
+Patient approval reply:
+- `APPROVE <code>` activates caregiver link
+- `DECLINE <code>` rejects caregiver link
+
+Caregiver pending commands:
+- `status`
+- `resend`
+- `cancel`
+
+Inspect verification requests:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -c "
+SELECT id, caregiver_name, patient_name, patient_phone_number, status, approval_code, expires_at, send_attempt_count
+FROM caregiver_verification_requests
+ORDER BY created_at DESC
+LIMIT 20;
+"
+```
 
 2) Create WhatsApp participant:
 

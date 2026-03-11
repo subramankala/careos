@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     enable_voice_escalation: bool = False
     voice_caller_id: str = ""
     onboarding_session_ttl_hours: int = 24
+    onboarding_verification_ttl_hours: int = 48
 
 
 settings = Settings()

@@ -13,6 +13,7 @@ from careos.domain.enums.core import Criticality, Flexibility, PersonaType, Recu
 from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
+    CaregiverVerificationRequest,
     LinkedPatientSummary,
     OnboardingSession,
     ParticipantIdentity,
@@ -101,6 +102,51 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def create_caregiver_verification_request(
+        self,
+        *,
+        tenant_id: str,
+        caregiver_participant_id: str,
+        patient_id: str,
+        patient_participant_id: str,
+        caregiver_name: str,
+        caregiver_phone_number: str,
+        patient_name: str,
+        patient_phone_number: str,
+        relationship: str,
+        approval_code: str,
+        expires_at: datetime,
+    ) -> CaregiverVerificationRequest:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_verification_request(self, request_id: str) -> CaregiverVerificationRequest | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_pending_verification_for_caregiver(
+        self, caregiver_participant_id: str
+    ) -> CaregiverVerificationRequest | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_pending_verifications_for_patient_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_verification_request(
+        self,
+        request_id: str,
+        *,
+        status: str | None = None,
+        send_attempt_count: int | None = None,
+        last_sent_at: datetime | None = None,
+        resolved_at: datetime | None = None,
+        resolution_note: str | None = None,
+    ) -> CaregiverVerificationRequest:
+        raise NotImplementedError
+
+    @abstractmethod
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
         raise NotImplementedError
 
@@ -169,6 +215,7 @@ class InMemoryStore(Store):
         self.default_patient_for_participant: dict[str, str] = {}
         self.active_patient_context: dict[str, dict] = {}
         self.onboarding_sessions: dict[str, dict] = {}
+        self.caregiver_verification_requests: dict[str, dict] = {}
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -209,6 +256,12 @@ class InMemoryStore(Store):
         }
 
     def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
+        for existing in self.links:
+            if (
+                str(existing["caregiver_participant_id"]) == str(caregiver_participant_id)
+                and str(existing["patient_id"]) == str(patient_id)
+            ):
+                return existing
         link = {
             "id": str(uuid4()),
             "caregiver_participant_id": caregiver_participant_id,
@@ -373,6 +426,111 @@ class InMemoryStore(Store):
         }
         self.onboarding_sessions[normalized] = row
         return OnboardingSession.model_validate(row)
+
+    def create_caregiver_verification_request(
+        self,
+        *,
+        tenant_id: str,
+        caregiver_participant_id: str,
+        patient_id: str,
+        patient_participant_id: str,
+        caregiver_name: str,
+        caregiver_phone_number: str,
+        patient_name: str,
+        patient_phone_number: str,
+        relationship: str,
+        approval_code: str,
+        expires_at: datetime,
+    ) -> CaregiverVerificationRequest:
+        request_id = str(uuid4())
+        row = {
+            "id": request_id,
+            "tenant_id": str(tenant_id),
+            "caregiver_participant_id": str(caregiver_participant_id),
+            "patient_id": str(patient_id),
+            "patient_participant_id": str(patient_participant_id),
+            "caregiver_name": caregiver_name,
+            "caregiver_phone_number": caregiver_phone_number,
+            "patient_name": patient_name,
+            "patient_phone_number": patient_phone_number,
+            "relationship": relationship,
+            "approval_code": approval_code,
+            "status": "pending",
+            "expires_at": _ensure_utc(expires_at),
+            "send_attempt_count": 0,
+            "last_sent_at": None,
+            "resolved_at": None,
+            "resolution_note": "",
+        }
+        self.caregiver_verification_requests[request_id] = row
+        return CaregiverVerificationRequest.model_validate(row)
+
+    def get_verification_request(self, request_id: str) -> CaregiverVerificationRequest | None:
+        row = self.caregiver_verification_requests.get(str(request_id))
+        if row is None:
+            return None
+        return CaregiverVerificationRequest.model_validate(row)
+
+    def get_pending_verification_for_caregiver(
+        self, caregiver_participant_id: str
+    ) -> CaregiverVerificationRequest | None:
+        now = datetime.now(UTC)
+        latest: dict | None = None
+        for row in self.caregiver_verification_requests.values():
+            if str(row["caregiver_participant_id"]) != str(caregiver_participant_id):
+                continue
+            if str(row["status"]) != "pending":
+                continue
+            if _ensure_dt(row["expires_at"]) <= now:
+                row["status"] = "expired"
+                row["resolved_at"] = now
+                row["resolution_note"] = "expired"
+                continue
+            if latest is None or str(row["id"]) > str(latest["id"]):
+                latest = row
+        return CaregiverVerificationRequest.model_validate(latest) if latest else None
+
+    def list_pending_verifications_for_patient_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        normalized = _normalize_phone(phone_number)
+        now = datetime.now(UTC)
+        rows: list[CaregiverVerificationRequest] = []
+        for row in self.caregiver_verification_requests.values():
+            if _normalize_phone(str(row["patient_phone_number"])) != normalized:
+                continue
+            if str(row["status"]) != "pending":
+                continue
+            if _ensure_dt(row["expires_at"]) <= now:
+                row["status"] = "expired"
+                row["resolved_at"] = now
+                row["resolution_note"] = "expired"
+                continue
+            rows.append(CaregiverVerificationRequest.model_validate(row))
+        rows.sort(key=lambda item: item.id)
+        return rows
+
+    def update_verification_request(
+        self,
+        request_id: str,
+        *,
+        status: str | None = None,
+        send_attempt_count: int | None = None,
+        last_sent_at: datetime | None = None,
+        resolved_at: datetime | None = None,
+        resolution_note: str | None = None,
+    ) -> CaregiverVerificationRequest:
+        row = self.caregiver_verification_requests[str(request_id)]
+        if status is not None:
+            row["status"] = status
+        if send_attempt_count is not None:
+            row["send_attempt_count"] = int(send_attempt_count)
+        if last_sent_at is not None:
+            row["last_sent_at"] = _ensure_utc(last_sent_at)
+        if resolved_at is not None:
+            row["resolved_at"] = _ensure_utc(resolved_at)
+        if resolution_note is not None:
+            row["resolution_note"] = resolution_note
+        self.caregiver_verification_requests[str(request_id)] = row
+        return CaregiverVerificationRequest.model_validate(row)
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
         identity = self.resolve_participant_by_phone(phone_number)
@@ -662,13 +820,25 @@ class PostgresStore(Store):
             }
 
     def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
+        find_sql = """
+        SELECT id, caregiver_participant_id, patient_id
+        FROM caregiver_patient_links
+        WHERE caregiver_participant_id = %(caregiver_participant_id)s
+          AND patient_id = %(patient_id)s
+        LIMIT 1
+        """
         sql = """
         INSERT INTO caregiver_patient_links (caregiver_participant_id, patient_id)
         VALUES (%(caregiver_participant_id)s, %(patient_id)s)
         RETURNING id, caregiver_participant_id, patient_id
         """
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
-            cur.execute(sql, {"caregiver_participant_id": caregiver_participant_id, "patient_id": patient_id})
+            params = {"caregiver_participant_id": caregiver_participant_id, "patient_id": patient_id}
+            cur.execute(find_sql, params)
+            existing = cur.fetchone()
+            if existing is not None:
+                return _row_dict(cur, existing)
+            cur.execute(sql, params)
             return _row_dict(cur, cur.fetchone())
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
@@ -926,6 +1096,178 @@ class PostgresStore(Store):
                 expires_at=_ensure_dt(data_row["expires_at"]),
                 completion_note=str(data_row.get("completion_note") or ""),
             )
+
+    def create_caregiver_verification_request(
+        self,
+        *,
+        tenant_id: str,
+        caregiver_participant_id: str,
+        patient_id: str,
+        patient_participant_id: str,
+        caregiver_name: str,
+        caregiver_phone_number: str,
+        patient_name: str,
+        patient_phone_number: str,
+        relationship: str,
+        approval_code: str,
+        expires_at: datetime,
+    ) -> CaregiverVerificationRequest:
+        sql = """
+        INSERT INTO caregiver_verification_requests
+        (tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+         caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code, status, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+        RETURNING id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+                  caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+                  status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    tenant_id,
+                    caregiver_participant_id,
+                    patient_id,
+                    patient_participant_id,
+                    caregiver_name,
+                    caregiver_phone_number,
+                    patient_name,
+                    patient_phone_number,
+                    relationship,
+                    approval_code,
+                    _ensure_utc(expires_at),
+                ),
+            )
+            return self._verification_row(cur, cur.fetchone())
+
+    def _expire_verification_requests(self) -> None:
+        sql = """
+        UPDATE caregiver_verification_requests
+        SET status = 'expired',
+            resolved_at = now(),
+            resolution_note = CASE
+              WHEN resolution_note = '' THEN 'expired'
+              ELSE resolution_note
+            END,
+            updated_at = now()
+        WHERE status = 'pending'
+          AND expires_at <= now()
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql)
+
+    def _verification_row(self, cursor, row) -> CaregiverVerificationRequest:
+        data = _row_dict(cursor, row)
+        return CaregiverVerificationRequest(
+            id=str(data["id"]),
+            tenant_id=str(data["tenant_id"]),
+            caregiver_participant_id=str(data["caregiver_participant_id"]),
+            patient_id=str(data["patient_id"]),
+            patient_participant_id=str(data["patient_participant_id"]),
+            caregiver_name=str(data["caregiver_name"]),
+            caregiver_phone_number=str(data["caregiver_phone_number"]),
+            patient_name=str(data["patient_name"]),
+            patient_phone_number=str(data["patient_phone_number"]),
+            relationship=str(data["relationship"]),
+            approval_code=str(data["approval_code"]),
+            status=str(data["status"]),
+            expires_at=_ensure_dt(data["expires_at"]),
+            send_attempt_count=int(data.get("send_attempt_count") or 0),
+            last_sent_at=_ensure_dt(data["last_sent_at"]) if data.get("last_sent_at") else None,
+            resolved_at=_ensure_dt(data["resolved_at"]) if data.get("resolved_at") else None,
+            resolution_note=str(data.get("resolution_note") or ""),
+        )
+
+    def get_verification_request(self, request_id: str) -> CaregiverVerificationRequest | None:
+        sql = """
+        SELECT id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+               caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+               status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        FROM caregiver_verification_requests
+        WHERE id = %s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (request_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return self._verification_row(cur, row)
+
+    def get_pending_verification_for_caregiver(
+        self, caregiver_participant_id: str
+    ) -> CaregiverVerificationRequest | None:
+        self._expire_verification_requests()
+        sql = """
+        SELECT id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+               caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+               status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        FROM caregiver_verification_requests
+        WHERE caregiver_participant_id = %s
+          AND status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (caregiver_participant_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return self._verification_row(cur, row)
+
+    def list_pending_verifications_for_patient_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        self._expire_verification_requests()
+        normalized = _normalize_phone(phone_number)
+        sql = """
+        SELECT id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+               caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+               status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        FROM caregiver_verification_requests
+        WHERE status = 'pending'
+          AND regexp_replace(replace(patient_phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
+              = regexp_replace(%(phone)s, '[^0-9+]', '', 'g')
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"phone": normalized})
+            return [self._verification_row(cur, row) for row in cur.fetchall()]
+
+    def update_verification_request(
+        self,
+        request_id: str,
+        *,
+        status: str | None = None,
+        send_attempt_count: int | None = None,
+        last_sent_at: datetime | None = None,
+        resolved_at: datetime | None = None,
+        resolution_note: str | None = None,
+    ) -> CaregiverVerificationRequest:
+        sql = """
+        UPDATE caregiver_verification_requests
+        SET status = COALESCE(%(status)s, status),
+            send_attempt_count = COALESCE(%(send_attempt_count)s, send_attempt_count),
+            last_sent_at = COALESCE(%(last_sent_at)s, last_sent_at),
+            resolved_at = COALESCE(%(resolved_at)s, resolved_at),
+            resolution_note = COALESCE(%(resolution_note)s, resolution_note),
+            updated_at = now()
+        WHERE id = %(request_id)s
+        RETURNING id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+                  caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+                  status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                {
+                    "request_id": request_id,
+                    "status": status,
+                    "send_attempt_count": send_attempt_count,
+                    "last_sent_at": _ensure_utc(last_sent_at) if last_sent_at else None,
+                    "resolved_at": _ensure_utc(resolved_at) if resolved_at else None,
+                    "resolution_note": resolution_note,
+                },
+            )
+            return self._verification_row(cur, cur.fetchone())
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
         identity = self.resolve_participant_by_phone(phone_number)

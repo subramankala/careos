@@ -52,7 +52,8 @@
 
 ## Known Pilot Limitations
 
-- Caregiver onboarding currently ends in `handoff_pending`; patient approval/verification workflow is not yet enforced.
+- Caregiver onboarding for another adult now stays in `verification_pending` until patient `APPROVE` reply.
+- Verification relies on patient phone ownership as WhatsApp identity proof; no additional KYC/OTP layer yet.
 - Onboarding sessions expire by TTL and restart from role selection; there is no admin endpoint yet to inspect or override sessions.
 - If upstream proxy/TLS URL configuration is wrong, Twilio signature checks will fail closed until `CAREOS_PUBLIC_WEBHOOK_BASE_URL` is corrected.
 - Scheduler uses idempotent writes for duplicate protection, but does not yet include advisory locking/leader election.
