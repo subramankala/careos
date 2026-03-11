@@ -16,6 +16,28 @@ set -a; source .env; set +a
 BASE="http://127.0.0.1:8115"
 ```
 
+## Full DB Reset (Start Fresh)
+
+Use the helper script in safe review mode first:
+
+```bash
+cd ~/careos
+set -a; source .env; set +a
+scripts/reset_db.sh
+```
+
+Execute reset:
+
+```bash
+scripts/reset_db.sh --apply
+```
+
+Execute reset and restart services:
+
+```bash
+scripts/reset_db.sh --apply --restart-services
+```
+
 ## ID Glossary
 
 - `tenant_id`: account boundary (family/clinic)

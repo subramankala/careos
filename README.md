@@ -160,6 +160,9 @@ Implemented behavior reference:
 Reusable onboarding and cleanup commands:
 [OPERATIONS_RUNBOOK.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/OPERATIONS_RUNBOOK.md)
 
+DB reset helper:
+- `scripts/reset_db.sh` (safe review mode by default; use `--apply` to execute)
+
 ## Control-plane rule
 
 The deployment path remains:
