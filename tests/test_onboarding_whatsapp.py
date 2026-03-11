@@ -38,8 +38,12 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
 
     third = _twilio(sender, "Indira Devi", "SM_onboard_self_3")
     assert "Done. Profile created for Indira Devi." in third
+    assert "Care setup menu:" in third
 
-    schedule = _twilio(sender, "schedule", "SM_onboard_self_4")
+    finish = _twilio(sender, "4", "SM_onboard_self_4")
+    assert "Setup saved." in finish
+
+    schedule = _twilio(sender, "schedule", "SM_onboard_self_5")
     assert "No wins are scheduled for today." in schedule
 
 

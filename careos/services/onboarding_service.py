@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from careos.db.repositories.store import Store
-from careos.domain.enums.core import PersonaType, Role
-from careos.domain.models.api import CaregiverVerificationRequest, ParticipantCreate, ParticipantIdentity, PatientCreate, TenantCreate
+from careos.domain.enums.core import Criticality, Flexibility, PersonaType, RecurrenceType, Role
+from careos.domain.models.api import (
+    AddWinsRequest,
+    CarePlanCreate,
+    CaregiverVerificationRequest,
+    ParticipantCreate,
+    ParticipantIdentity,
+    PatientCreate,
+    TenantCreate,
+    WinDefinitionCreate,
+    WinInstanceCreate,
+)
 from careos.integrations.twilio.sender import TwilioWhatsAppSender
 from careos.settings import settings
 
@@ -22,6 +33,14 @@ class OnboardingService:
         identity: ParticipantIdentity | None,
         linked_patient_count: int,
     ) -> str | None:
+        session = self.store.get_onboarding_session(sender_phone)
+
+        # Phase C continuation: keep lightweight setup wizard active after onboarding/approval.
+        if session is not None and session.status == "active" and session.state.startswith("setup_"):
+            if identity is None:
+                return "Could not resolve setup context. Reply 'hi' to restart onboarding."
+            return self._handle_setup_message(sender_phone=sender_phone, body=body, identity=identity, session_data=dict(session.data))
+
         verification_reply = self._handle_verification_message(sender_phone=sender_phone, body=body)
         if verification_reply is not None:
             return verification_reply
@@ -35,7 +54,6 @@ class OnboardingService:
                 return self._handle_caregiver_pending(sender_phone=sender_phone, body=body, request=pending)
 
         now = datetime.now(UTC)
-        session = self.store.get_onboarding_session(sender_phone)
         expired = False
         if session and session.status == "active" and session.expires_at <= now:
             self.store.save_onboarding_session(
@@ -76,16 +94,14 @@ class OnboardingService:
             if not text:
                 return "Please share patient full name."
             patient_name = self._clean_name(text)
-            data["patient_name"] = patient_name
-            self._complete_self_onboarding(sender_phone, patient_name, identity)
-            self._save_session(
-                sender_phone,
-                state="completed",
-                status="completed",
-                data=data,
-                completion_note="self_onboarding_complete",
+            created = self._complete_self_onboarding(sender_phone, patient_name, identity)
+            self._activate_setup_session(
+                phone_number=sender_phone,
+                participant_id=created["participant_id"],
+                patient_id=created["patient_id"],
+                source="self_onboarding_complete",
             )
-            return f"Done. Profile created for {patient_name}. Reply 'schedule' to see today."
+            return f"Done. Profile created for {patient_name}.\n{self._setup_menu_prompt()}"
 
         if session.state == "caregiver_name":
             if not text:
@@ -125,13 +141,7 @@ class OnboardingService:
                 return "Could not start verification for this patient phone. Reply 'hi' to restart onboarding."
 
             data["verification_request_id"] = pending.id
-            self._save_session(
-                sender_phone,
-                state="verification_pending",
-                status="active",
-                data=data,
-                completion_note="",
-            )
+            self._save_session(sender_phone, state="verification_pending", status="active", data=data, completion_note="")
             return self._caregiver_waiting_prompt(pending)
 
         if session.state == "verification_pending":
@@ -148,11 +158,377 @@ class OnboardingService:
                 return "Verification request not found. Reply 'hi' to restart onboarding."
             return self._handle_caregiver_pending(sender_phone=sender_phone, body=body, request=request)
 
-        if session.state in {"completed", "handoff_pending", "verification_failed"}:
+        if session.state in {"completed", "verification_failed"}:
             return "Onboarding already completed. Reply 'schedule' or 'help'."
 
         self._save_session(sender_phone, state="choose_role", status="active", data={})
         return self._role_prompt()
+
+    def _handle_setup_message(self, *, sender_phone: str, body: str, identity: ParticipantIdentity, session_data: dict) -> str:
+        text = body.strip()
+        normalized = text.lower()
+
+        if normalized in {"finish", "finish for now", "4"} and session_data.get("setup_state", "menu") == "menu":
+            self._save_session(
+                sender_phone,
+                state="completed",
+                status="completed",
+                data=session_data,
+                completion_note="setup_finished",
+            )
+            return "Setup saved. You can now use: schedule, next, status."
+
+        setup_state = str(session_data.get("setup_state") or "menu")
+        draft = dict(session_data.get("setup_draft") or {})
+
+        if setup_state == "menu":
+            if normalized in {"menu", "0"}:
+                return self._setup_menu_prompt()
+            if normalized in {"1", "add medications", "medication", "medications"}:
+                session_data["setup_type"] = "medication"
+                session_data["setup_state"] = "med_name"
+                session_data["setup_draft"] = {}
+                self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+                return "Medication name?"
+            if normalized in {"2", "add appointments", "appointment", "appointments"}:
+                session_data["setup_type"] = "appointment"
+                session_data["setup_state"] = "appt_title"
+                session_data["setup_draft"] = {}
+                self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+                return "Appointment title?"
+            if normalized in {"3", "add routines", "routine", "routines"}:
+                session_data["setup_type"] = "routine"
+                session_data["setup_state"] = "routine_category"
+                session_data["setup_draft"] = {}
+                self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+                return "Routine category: 1) meal 2) movement 3) sleep 4) therapy"
+            return self._setup_menu_prompt()
+
+        if normalized in {"menu"}:
+            return self._setup_menu_prompt()
+
+        if session_data.get("setup_type") == "medication":
+            return self._handle_medication_setup(sender_phone, text, normalized, identity, session_data, draft)
+        if session_data.get("setup_type") == "appointment":
+            return self._handle_appointment_setup(sender_phone, text, normalized, identity, session_data, draft)
+        if session_data.get("setup_type") == "routine":
+            return self._handle_routine_setup(sender_phone, text, normalized, identity, session_data, draft)
+
+        session_data["setup_state"] = "menu"
+        session_data.pop("setup_type", None)
+        session_data.pop("setup_draft", None)
+        self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+        return self._setup_menu_prompt()
+
+    def _handle_medication_setup(
+        self,
+        sender_phone: str,
+        text: str,
+        normalized: str,
+        identity: ParticipantIdentity,
+        session_data: dict,
+        draft: dict,
+    ) -> str:
+        state = str(session_data.get("setup_state") or "")
+
+        if state == "med_name":
+            draft["title"] = self._clean_name(text)
+            session_data["setup_state"] = "med_time"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Medication timing? Use HH:MM (24h)."
+
+        if state == "med_time":
+            parsed = self._parse_time(text)
+            if parsed is None:
+                return "Invalid time. Use HH:MM (24h), e.g. 08:00"
+            draft["time"] = parsed
+            session_data["setup_state"] = "med_instructions"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Instructions? (or reply 'skip')"
+
+        if state == "med_instructions":
+            draft["instructions"] = "Take as prescribed" if normalized == "skip" else text.strip()[:200]
+            session_data["setup_state"] = "med_why"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Why it matters? (or reply 'skip')"
+
+        if state == "med_why":
+            draft["why"] = "" if normalized == "skip" else text.strip()[:200]
+            try:
+                result = self._create_medication_item(identity, session_data, draft)
+            except ValueError:
+                result = "Could not resolve setup target patient. Reply 'patients' then try setup again."
+            session_data["setup_state"] = "menu"
+            session_data.pop("setup_type", None)
+            session_data.pop("setup_draft", None)
+            self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+            return f"{result}\n{self._setup_menu_prompt()}"
+
+        session_data["setup_state"] = "menu"
+        self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+        return self._setup_menu_prompt()
+
+    def _handle_appointment_setup(
+        self,
+        sender_phone: str,
+        text: str,
+        _normalized: str,
+        identity: ParticipantIdentity,
+        session_data: dict,
+        draft: dict,
+    ) -> str:
+        state = str(session_data.get("setup_state") or "")
+
+        if state == "appt_title":
+            draft["title"] = self._clean_name(text)
+            session_data["setup_state"] = "appt_date"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Appointment date? Use YYYY-MM-DD"
+
+        if state == "appt_date":
+            parsed_date = self._parse_date(text)
+            if parsed_date is None:
+                return "Invalid date. Use YYYY-MM-DD"
+            draft["date"] = parsed_date
+            session_data["setup_state"] = "appt_time"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Appointment time? Use HH:MM (24h)."
+
+        if state == "appt_time":
+            parsed_time = self._parse_time(text)
+            if parsed_time is None:
+                return "Invalid time. Use HH:MM (24h), e.g. 14:30"
+            draft["time"] = parsed_time
+            try:
+                result = self._create_appointment_item(identity, session_data, draft)
+            except ValueError:
+                result = "Could not resolve setup target patient. Reply 'patients' then try setup again."
+            session_data["setup_state"] = "menu"
+            session_data.pop("setup_type", None)
+            session_data.pop("setup_draft", None)
+            self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+            return f"{result}\n{self._setup_menu_prompt()}"
+
+        session_data["setup_state"] = "menu"
+        self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+        return self._setup_menu_prompt()
+
+    def _handle_routine_setup(
+        self,
+        sender_phone: str,
+        text: str,
+        normalized: str,
+        identity: ParticipantIdentity,
+        session_data: dict,
+        draft: dict,
+    ) -> str:
+        state = str(session_data.get("setup_state") or "")
+
+        if state == "routine_category":
+            mapping = {
+                "1": "meal",
+                "2": "movement",
+                "3": "sleep",
+                "4": "therapy",
+                "meal": "meal",
+                "movement": "movement",
+                "sleep": "sleep",
+                "therapy": "therapy",
+            }
+            category = mapping.get(normalized)
+            if category is None:
+                return "Pick category: 1) meal 2) movement 3) sleep 4) therapy"
+            draft["category"] = category
+            session_data["setup_state"] = "routine_timing"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Timing/window? HH:MM or HH:MM-HH:MM"
+
+        if state == "routine_timing":
+            parsed = self._parse_time_or_window(text)
+            if parsed is None:
+                return "Invalid format. Use HH:MM or HH:MM-HH:MM"
+            draft.update(parsed)
+            session_data["setup_state"] = "routine_instructions"
+            session_data["setup_draft"] = draft
+            self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
+            return "Instructions? (or reply 'skip')"
+
+        if state == "routine_instructions":
+            draft["instructions"] = "" if normalized == "skip" else text.strip()[:200]
+            try:
+                result = self._create_routine_item(identity, session_data, draft)
+            except ValueError:
+                result = "Could not resolve setup target patient. Reply 'patients' then try setup again."
+            session_data["setup_state"] = "menu"
+            session_data.pop("setup_type", None)
+            session_data.pop("setup_draft", None)
+            self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+            return f"{result}\n{self._setup_menu_prompt()}"
+
+        session_data["setup_state"] = "menu"
+        self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+        return self._setup_menu_prompt()
+
+    def _create_medication_item(self, identity: ParticipantIdentity, session_data: dict, draft: dict) -> str:
+        patient_id, participant_id = self._resolve_setup_target(identity, session_data)
+        care_plan_id = self._ensure_active_care_plan(patient_id, participant_id)
+        start_utc = self._next_local_time_utc(patient_id, str(draft["time"]))
+        end_utc = start_utc + timedelta(minutes=30)
+
+        payload = AddWinsRequest(
+            patient_id=patient_id,
+            definitions=[
+                WinDefinitionCreate(
+                    category="medication",
+                    title=str(draft["title"]),
+                    instructions=str(draft.get("instructions") or "Take as prescribed"),
+                    why_it_matters=str(draft.get("why") or ""),
+                    criticality=Criticality.HIGH,
+                    flexibility=Flexibility.RIGID,
+                    recurrence_type=RecurrenceType.DAILY,
+                    recurrence_interval=1,
+                    recurrence_days_of_week=[],
+                    recurrence_until=None,
+                    temporary_start=None,
+                    temporary_end=None,
+                    default_channel_policy={"channel": "whatsapp"},
+                    escalation_policy={"caregiver_notify": "true"},
+                )
+            ],
+            instances=[WinInstanceCreate(scheduled_start=start_utc, scheduled_end=end_utc)],
+        )
+        self.store.add_wins(care_plan_id, payload)
+        return f"Medication added: {draft['title']} at {draft['time']}."
+
+    def _create_appointment_item(self, identity: ParticipantIdentity, session_data: dict, draft: dict) -> str:
+        patient_id, participant_id = self._resolve_setup_target(identity, session_data)
+        care_plan_id = self._ensure_active_care_plan(patient_id, participant_id)
+        start_utc = self._local_datetime_to_utc(patient_id, str(draft["date"]), str(draft["time"]))
+        end_utc = start_utc + timedelta(hours=1)
+
+        payload = AddWinsRequest(
+            patient_id=patient_id,
+            definitions=[
+                WinDefinitionCreate(
+                    category="appointment",
+                    title=str(draft["title"]),
+                    instructions="Attend appointment",
+                    why_it_matters="",
+                    criticality=Criticality.MEDIUM,
+                    flexibility=Flexibility.WINDOWED,
+                    recurrence_type=RecurrenceType.ONE_OFF,
+                    recurrence_interval=1,
+                    recurrence_days_of_week=[],
+                    recurrence_until=None,
+                    temporary_start=None,
+                    temporary_end=None,
+                    default_channel_policy={"channel": "whatsapp"},
+                    escalation_policy={},
+                )
+            ],
+            instances=[WinInstanceCreate(scheduled_start=start_utc, scheduled_end=end_utc)],
+        )
+        self.store.add_wins(care_plan_id, payload)
+        return f"Appointment added: {draft['title']} on {draft['date']} {draft['time']}."
+
+    def _create_routine_item(self, identity: ParticipantIdentity, session_data: dict, draft: dict) -> str:
+        patient_id, participant_id = self._resolve_setup_target(identity, session_data)
+        care_plan_id = self._ensure_active_care_plan(patient_id, participant_id)
+
+        if "window_start" in draft and "window_end" in draft:
+            start_utc = self._next_local_time_utc(patient_id, str(draft["window_start"]))
+            end_utc = self._next_local_time_utc(patient_id, str(draft["window_end"]))
+            if end_utc <= start_utc:
+                end_utc = start_utc + timedelta(minutes=60)
+            flexibility = Flexibility.WINDOWED
+            timing_text = f"{draft['window_start']}-{draft['window_end']}"
+        else:
+            start_utc = self._next_local_time_utc(patient_id, str(draft["time"]))
+            end_utc = start_utc + timedelta(minutes=30)
+            flexibility = Flexibility.FLEXIBLE
+            timing_text = str(draft["time"])
+
+        category = str(draft["category"])
+        payload = AddWinsRequest(
+            patient_id=patient_id,
+            definitions=[
+                WinDefinitionCreate(
+                    category=category,
+                    title=f"{category.title()} routine",
+                    instructions=str(draft.get("instructions") or ""),
+                    why_it_matters="",
+                    criticality=Criticality.LOW,
+                    flexibility=flexibility,
+                    recurrence_type=RecurrenceType.DAILY,
+                    recurrence_interval=1,
+                    recurrence_days_of_week=[],
+                    recurrence_until=None,
+                    temporary_start=None,
+                    temporary_end=None,
+                    default_channel_policy={"channel": "whatsapp"},
+                    escalation_policy={},
+                )
+            ],
+            instances=[WinInstanceCreate(scheduled_start=start_utc, scheduled_end=end_utc)],
+        )
+        self.store.add_wins(care_plan_id, payload)
+        return f"Routine added: {category} at {timing_text}."
+
+    def _resolve_setup_target(self, identity: ParticipantIdentity, session_data: dict) -> tuple[str, str]:
+        patient_id = str(session_data.get("setup_patient_id") or "")
+        participant_id = str(session_data.get("setup_participant_id") or identity.participant_id)
+
+        if not patient_id:
+            active = self.store.get_active_patient_context(identity.participant_id)
+            if active:
+                patient_id = active
+            else:
+                linked = self.store.list_linked_patients(identity.participant_id)
+                if len(linked) == 1:
+                    patient_id = linked[0].patient_id
+
+        if not patient_id:
+            raise ValueError("setup target patient not found")
+        return patient_id, participant_id
+
+    def _ensure_active_care_plan(self, patient_id: str, participant_id: str) -> str:
+        existing = self.store.get_active_care_plan_for_patient(patient_id)
+        if existing is not None:
+            return str(existing["id"])
+        created = self.store.create_care_plan(
+            CarePlanCreate(
+                patient_id=patient_id,
+                created_by_participant_id=participant_id,
+                status="active",
+                version=1,
+                source_type="manual",
+            )
+        )
+        return str(created["id"])
+
+    def _next_local_time_utc(self, patient_id: str, hhmm: str) -> datetime:
+        profile = self.store.get_patient_profile(patient_id) or {"timezone": settings.default_timezone}
+        tz = ZoneInfo(str(profile.get("timezone") or settings.default_timezone))
+        now_local = datetime.now(UTC).astimezone(tz)
+        hour, minute = [int(piece) for piece in hhmm.split(":", 1)]
+        candidate = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now_local:
+            candidate = candidate + timedelta(days=1)
+        return candidate.astimezone(UTC)
+
+    def _local_datetime_to_utc(self, patient_id: str, yyyy_mm_dd: str, hhmm: str) -> datetime:
+        profile = self.store.get_patient_profile(patient_id) or {"timezone": settings.default_timezone}
+        tz = ZoneInfo(str(profile.get("timezone") or settings.default_timezone))
+        day = datetime.fromisoformat(yyyy_mm_dd).date()
+        hour, minute = [int(piece) for piece in hhmm.split(":", 1)]
+        local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz)
+        return local.astimezone(UTC)
 
     def _handle_verification_message(self, *, sender_phone: str, body: str) -> str | None:
         command, code = self._parse_verification_reply(body)
@@ -185,17 +561,15 @@ class OnboardingService:
             self.store.link_caregiver(chosen.caregiver_participant_id, chosen.patient_id)
             self.store.link_caregiver(chosen.patient_participant_id, chosen.patient_id)
             self.store.set_active_patient_context(chosen.caregiver_participant_id, chosen.patient_id, "verification_approved")
-            self.store.save_onboarding_session(
+            self._activate_setup_session(
                 phone_number=chosen.caregiver_phone_number,
-                state="completed",
-                status="completed",
-                data={"verification_request_id": chosen.id},
-                expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
-                completion_note="verification_approved",
+                participant_id=chosen.caregiver_participant_id,
+                patient_id=chosen.patient_id,
+                source="verification_approved",
             )
             caregiver_msg = (
-                f"Approved by {chosen.patient_name}. Caregiver access is now active. "
-                "Reply 'patients' to continue."
+                f"Approved by {chosen.patient_name}. Caregiver access is now active.\n"
+                + self._setup_menu_prompt()
             )
             self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
             return "Approved. Caregiver has been informed."
@@ -222,7 +596,7 @@ class OnboardingService:
         now = datetime.now(UTC)
         if request.status != "pending":
             if request.status == "approved":
-                return "Approved. You can now use 'patients' and continue setup."
+                return "Approved. You can now continue setup."
             if request.status == "declined":
                 return "Declined by patient. No link was created."
             if request.status == "canceled":
@@ -269,10 +643,7 @@ class OnboardingService:
                 last_sent_at=now,
                 resolution_note=f"resent_{status_text}",
             )
-            return (
-                f"Verification {status_text} to {updated.patient_phone_number}. "
-                "Reply STATUS, RESEND, or CANCEL."
-            )
+            return f"Verification {status_text} to {updated.patient_phone_number}. Reply STATUS, RESEND, or CANCEL."
 
         return self._caregiver_waiting_prompt(request)
 
@@ -281,7 +652,7 @@ class OnboardingService:
         sender_phone: str,
         patient_name: str,
         identity: ParticipantIdentity | None,
-    ) -> None:
+    ) -> dict:
         participant_record = self.store.find_participant_record_by_phone(sender_phone)
         tenant_id: str
         participant_id: str
@@ -323,8 +694,10 @@ class OnboardingService:
                 status="active",
             )
         )
-        self.store.link_caregiver(participant_id, str(patient["id"]))
-        self.store.set_active_patient_context(participant_id, str(patient["id"]), "onboarding_self")
+        patient_id = str(patient["id"])
+        self.store.link_caregiver(participant_id, patient_id)
+        self.store.set_active_patient_context(participant_id, patient_id, "onboarding_self")
+        return {"participant_id": participant_id, "patient_id": patient_id}
 
     def _start_caregiver_verification(
         self,
@@ -446,6 +819,21 @@ class OnboardingService:
         except Exception:
             return False
 
+    def _activate_setup_session(self, *, phone_number: str, participant_id: str, patient_id: str, source: str) -> None:
+        self.store.save_onboarding_session(
+            phone_number=phone_number,
+            state="setup_menu",
+            status="active",
+            data={
+                "setup_state": "menu",
+                "setup_patient_id": patient_id,
+                "setup_participant_id": participant_id,
+                "setup_source": source,
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
+            completion_note="",
+        )
+
     def _choose_verification_request(
         self, requests: list[CaregiverVerificationRequest], code: str | None
     ) -> CaregiverVerificationRequest | None:
@@ -470,6 +858,16 @@ class OnboardingService:
 
     def _approval_code(self) -> str:
         return uuid4().hex[:6].upper()
+
+    def _setup_menu_prompt(self) -> str:
+        return (
+            "Care setup menu:\n"
+            "1) add medications\n"
+            "2) add appointments\n"
+            "3) add routines\n"
+            "4) finish for now\n"
+            "Reply 1-4"
+        )
 
     def _caregiver_waiting_prompt(self, request: CaregiverVerificationRequest) -> str:
         return (
@@ -518,3 +916,38 @@ class OnboardingService:
 
     def _clean_name(self, raw_name: str) -> str:
         return " ".join(raw_name.strip().split())[:80]
+
+    def _parse_time(self, value: str) -> str | None:
+        text = value.strip()
+        parts = text.split(":")
+        if len(parts) != 2:
+            return None
+        if not all(part.isdigit() for part in parts):
+            return None
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return f"{hour:02d}:{minute:02d}"
+
+    def _parse_date(self, value: str) -> str | None:
+        text = value.strip()
+        try:
+            return datetime.fromisoformat(text).date().isoformat()
+        except ValueError:
+            return None
+
+    def _parse_time_or_window(self, value: str) -> dict | None:
+        text = value.strip()
+        if "-" not in text:
+            parsed = self._parse_time(text)
+            if parsed is None:
+                return None
+            return {"time": parsed}
+
+        left, right = [piece.strip() for piece in text.split("-", 1)]
+        start = self._parse_time(left)
+        end = self._parse_time(right)
+        if start is None or end is None:
+            return None
+        return {"window_start": start, "window_end": end}

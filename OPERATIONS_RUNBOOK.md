@@ -98,6 +98,18 @@ Caregiver pending commands:
 - `resend`
 - `cancel`
 
+Post-approval / post-self setup menu:
+- `1` add medications
+- `2` add appointments
+- `3` add routines
+- `4` finish for now
+
+Wizard shortcuts:
+- Optional fields accept `skip`
+- Date format: `YYYY-MM-DD`
+- Time format: `HH:MM` (24h)
+- Routine window: `HH:MM-HH:MM`
+
 Inspect verification requests:
 
 ```bash

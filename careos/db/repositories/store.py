@@ -65,6 +65,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_active_care_plan_for_patient(self, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         raise NotImplementedError
 
@@ -315,6 +319,33 @@ class InMemoryStore(Store):
                 created += 1
         created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
+
+    def get_active_care_plan_for_patient(self, patient_id: str) -> dict | None:
+        sql = """
+        SELECT id, patient_id, created_by_participant_id, status, version, effective_start, effective_end, source_type
+        FROM care_plans
+        WHERE patient_id = %s
+          AND status = 'active'
+        ORDER BY version DESC, created_at DESC
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (patient_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
+    def get_active_care_plan_for_patient(self, patient_id: str) -> dict | None:
+        candidates = [
+            plan
+            for plan in self.care_plans.values()
+            if str(plan.get("patient_id")) == str(patient_id) and str(plan.get("status", "")) == "active"
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: int(item.get("version", 0)), reverse=True)
+        return dict(candidates[0])
 
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         normalized = _normalize_phone(phone_number)

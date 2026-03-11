@@ -253,7 +253,7 @@ Current runtime status:
 - Scheduler currently uses configured patient allowlist (`CAREOS_SCHEDULER_PATIENT_IDS`) for pilot control.
 - Verification is based on WhatsApp phone ownership and approval code; no secondary identity check (OTP/KYC) yet.
 
-## 16) WhatsApp Onboarding + Verification (Phase B)
+## 16) WhatsApp Onboarding + Verification + Setup Continuation (Phase C)
 
 Unknown or incomplete senders now enter a structured onboarding wizard over WhatsApp.
 
@@ -268,8 +268,8 @@ Supported entry branches:
 
 State flow:
 - `choose_role`
-- `self_patient_name` -> `completed`
-- `caregiver_name` -> `caregiver_patient_name` -> `caregiver_patient_phone` -> `caregiver_relationship` -> `verification_pending` -> (`completed` on approved/declined/canceled/expired)
+- `self_patient_name` -> `setup_menu` -> `setup_wizard` -> `completed` (finish for now)
+- `caregiver_name` -> `caregiver_patient_name` -> `caregiver_patient_phone` -> `caregiver_relationship` -> `verification_pending` -> (`setup_menu` on approved, `completed` on declined/canceled/expired)
 
 Resume/expiration:
 - active sessions resume from the last saved state
@@ -282,6 +282,17 @@ Verification request model:
 - patient receives outbound prompt: `APPROVE <code>` or `DECLINE <code>`
 - caregiver commands while pending: `status`, `resend`, `cancel`
 - caregiver-patient link is activated only after patient `APPROVE`
+
+Post-approval setup menu:
+- `1` add medications (name, timing, optional instructions, optional why)
+- `2` add appointments (title, date, time)
+- `3` add routines (category, timing/window, optional instructions)
+- `4` finish for now
+
+Setup storage behavior:
+- setup inputs are draft in `onboarding_sessions.data` until the last step of each wizard path
+- on final step, item is written as active care-plan win definition + win instance
+- `finish for now` marks onboarding session completed and hands off to normal deterministic commands
 
 ## 15) Documentation Sync Policy
 

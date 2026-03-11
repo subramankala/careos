@@ -5,6 +5,7 @@
 1. Twilio sends inbound webhook to `POST /twilio/webhook`.
 2. FastAPI validates signature and parses sender (`From`) + message text (`Body`).
 3. Unknown or incomplete senders enter `OnboardingService` state machine (`myself` vs `someone I care for`) with persisted session state.
+   After self-onboarding or caregiver approval, flow continues into a persisted setup wizard menu.
 4. Known senders resolve through `IdentityService` with active patient context rules.
 5. Inbound message is persisted in `message_events` only after patient context is resolved.
 6. `DeterministicRouter` executes command using `WinService`.

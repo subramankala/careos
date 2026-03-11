@@ -143,6 +143,11 @@ WhatsApp onboarding (unknown/incomplete sender):
 - caregiver flow captures caregiver name, patient name, patient phone, relationship and enters verification-pending state
 - patient must reply `APPROVE <code>` or `DECLINE <code>` before caregiver link is activated
 - caregiver can use `status`, `resend`, `cancel` while verification is pending
+- after self-onboarding or caregiver approval, setup continues to a compact menu:
+  - `1` add medications
+  - `2` add appointments
+  - `3` add routines
+  - `4` finish for now
 
 ## Architecture doc
 
