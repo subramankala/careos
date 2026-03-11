@@ -238,13 +238,16 @@ class InMemoryStore(Store):
         )
 
     def list_linked_patients(self, participant_id: str) -> list[LinkedPatientSummary]:
-        linked_patient_ids = sorted(
-            {
-                str(link["patient_id"])
-                for link in self.links
-                if str(link["caregiver_participant_id"]) == str(participant_id)
-            }
-        )
+        linked_patient_ids: list[str] = []
+        seen: set[str] = set()
+        for link in self.links:
+            if str(link["caregiver_participant_id"]) != str(participant_id):
+                continue
+            patient_id = str(link["patient_id"])
+            if patient_id in seen:
+                continue
+            seen.add(patient_id)
+            linked_patient_ids.append(patient_id)
         out: list[LinkedPatientSummary] = []
         for patient_id in linked_patient_ids:
             patient = self.patients.get(patient_id)
@@ -258,6 +261,7 @@ class InMemoryStore(Store):
                     tenant_id=str(patient.get("tenant_id")),
                 )
             )
+        out.sort(key=lambda item: item.display_name.casefold())
         return out
 
     def get_active_patient_context(self, participant_id: str) -> str | None:
