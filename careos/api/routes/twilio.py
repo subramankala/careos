@@ -9,9 +9,11 @@ from careos.app_context import context
 from careos.domain.models.api import LinkedPatientSummary, ParticipantIdentity
 from careos.integrations.twilio.twiml import message_response
 from careos.integrations.twilio.validator import validate_signature
+from careos.logging import get_logger
 from careos.settings import settings
 
 router = APIRouter()
+logger = get_logger("twilio_webhook")
 
 
 def _patients_prompt(patients: list[LinkedPatientSummary], active_patient_id: str | None = None) -> str:
@@ -172,9 +174,22 @@ async def twilio_webhook(request: Request) -> Response:
 
     result = context.router.handle(body, participant)
     if result.action == "fallback" and settings.conversation_engine.lower() == "openclaw":
+        logger.info(
+            "nl_fallback_requested",
+            patient_id=participant.patient_id,
+            participant_id=participant.participant_id,
+            message_sid=correlation_id,
+        )
         nlu_result = context.openclaw_router.handle(body, participant)
         if nlu_result.action != "unavailable" and nlu_result.text.strip():
             result = nlu_result
+        else:
+            logger.warning(
+                "nl_fallback_unavailable",
+                patient_id=participant.patient_id,
+                participant_id=participant.participant_id,
+                message_sid=correlation_id,
+            )
     context.messaging.log_outbound(
         tenant_id=participant.tenant_id,
         patient_id=participant.patient_id,

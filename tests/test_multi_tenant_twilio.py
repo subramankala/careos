@@ -583,3 +583,33 @@ def test_openclaw_local_base_url_uses_inprocess_bridge() -> None:
     finally:
         settings.conversation_engine = previous_engine
         settings.openclaw_base_url = previous_base_url
+
+
+def test_openclaw_local_bridge_unmapped_nl_returns_guidance() -> None:
+    settings.validate_twilio_signature = False
+    previous_engine = settings.conversation_engine
+    previous_base_url = settings.openclaw_base_url
+    try:
+        settings.conversation_engine = "openclaw"
+        settings.openclaw_base_url = "http://127.0.0.1:8115"
+        tenant = client.post(
+            "/tenants",
+            json={"name": "OpenClawLocalBridgeUnmapped", "type": "family", "timezone": "UTC", "status": "active"},
+        ).json()
+        _seed_patient(tenant["id"], "whatsapp:+15550006604", "Unmapped Bridge Dose")
+
+        response = client.post(
+            "/twilio/webhook",
+            data={
+                "From": "whatsapp:+15550006604",
+                "To": "whatsapp:+15558889999",
+                "Body": "tell me a joke",
+                "MessageSid": "SM_openclaw_local_bridge_unmapped",
+            },
+        )
+        assert response.status_code == 200
+        assert "I can help with schedule, next, status" in response.text
+        assert "Schedule (" not in response.text
+    finally:
+        settings.conversation_engine = previous_engine
+        settings.openclaw_base_url = previous_base_url

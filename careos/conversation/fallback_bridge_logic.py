@@ -50,3 +50,8 @@ def resolve_fallback_text(text: str, participant_context: ParticipantContext, wi
     router = DeterministicRouter(win_service)
     result = router.handle(mapped, participant_context)
     return result.text
+
+
+def fallback_intent(text: str) -> str:
+    mapped = map_plain_english_to_command(text)
+    return mapped or "unmapped"
