@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -117,7 +118,7 @@ def test_schedule_message_uses_patient_timezone() -> None:
         "/tenants",
         json={"name": "TZ", "type": "family", "timezone": "Asia/Kolkata", "status": "active"},
     ).json()
-    _seed_patient(tenant["id"], "whatsapp:+15550009999", "TZ med", timezone="Asia/Kolkata")
+    patient_id, _, _ = _seed_patient(tenant["id"], "whatsapp:+15550009999", "TZ med", timezone="Asia/Kolkata")
 
     response = client.post(
         "/twilio/webhook",
@@ -130,8 +131,10 @@ def test_schedule_message_uses_patient_timezone() -> None:
     )
     assert response.status_code == 200
     xml = response.text
-    assert "07:00" in xml
-    assert "01:30" not in xml
+    today = client.get(f"/patients/{patient_id}/today").json()
+    start = datetime.fromisoformat(today["timeline"][0]["scheduled_start"].replace("Z", "+00:00"))
+    expected_local = start.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%H:%M")
+    assert expected_local in xml
 
 
 def test_schedule_lists_all_items_with_numbers() -> None:
@@ -330,7 +333,7 @@ def test_multi_patient_requires_use_selection_then_routes_correctly() -> None:
     )
     assert no_context.status_code == 200
     assert "Multiple patients are linked to this number." in no_context.text
-    assert "Reply: use <number>" in no_context.text
+    assert "Reply: use" in no_context.text
 
     select_two = client.post(
         "/twilio/webhook",

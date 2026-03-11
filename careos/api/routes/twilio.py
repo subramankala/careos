@@ -56,6 +56,23 @@ def _resolve_context_for_message(
     if len(linked_patients) == 0:
         return ("We could not match this number to a CareOS profile. Ask your caregiver to complete onboarding.", None)
 
+    use_target = _parse_use_target(body)
+    if use_target is not None:
+        selected = _resolve_use_target(use_target, linked_patients)
+        if selected is None:
+            if len(linked_patients) > 1:
+                return ("Invalid selection.\n" + _patients_prompt(linked_patients, active_patient_id), None)
+            return ("Invalid selection.", None)
+        try:
+            context.identity_service.set_active_patient_context(
+                identity.participant_id,
+                selected.patient_id,
+                "whatsapp_use_command",
+            )
+        except ValueError:
+            return ("Could not switch patient context safely. Please try again.", None)
+        return (f"Switched to {selected.display_name} ({selected.timezone}).", selected.patient_id)
+
     if len(linked_patients) == 1:
         only = linked_patients[0]
         if active_patient_id != only.patient_id:
@@ -71,21 +88,6 @@ def _resolve_context_for_message(
             + _patients_prompt(linked_patients, None)
         )
         return (text, None)
-
-    use_target = _parse_use_target(body)
-    if use_target is not None:
-        selected = _resolve_use_target(use_target, linked_patients)
-        if selected is None:
-            return ("Invalid selection.\n" + _patients_prompt(linked_patients, active_patient_id), None)
-        try:
-            context.identity_service.set_active_patient_context(
-                identity.participant_id,
-                selected.patient_id,
-                "whatsapp_use_command",
-            )
-        except ValueError:
-            return ("Could not switch patient context safely. Please try again.", None)
-        return (f"Switched to {selected.display_name} ({selected.timezone}).", selected.patient_id)
 
     if active_patient_id is None:
         return (_patients_prompt(linked_patients, None), None)
