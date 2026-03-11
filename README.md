@@ -153,6 +153,10 @@ Plain-English fallback mode:
 - `careos-lite` now exposes a local bridge endpoint at `/v1/careos/fallback` that maps common plain-English requests to deterministic commands.
 - Recommended VM setting for local bridge: `CAREOS_OPENCLAW_BASE_URL=http://127.0.0.1:8115`.
 - External OpenClaw can still be used by pointing `CAREOS_OPENCLAW_BASE_URL` at that service URL if it implements the same fallback contract.
+- For free-form LLM interpretation (instead of only rules), set:
+  - `CAREOS_OPENAI_API_KEY`
+  - `CAREOS_OPENAI_MODEL` (default `gpt-4o-mini`)
+  - `CAREOS_OPENAI_TIMEOUT_SECONDS`
 - If OpenClaw is unavailable/error, FastAPI returns the normal deterministic fallback text.
 
 WhatsApp onboarding (unknown/incomplete sender):

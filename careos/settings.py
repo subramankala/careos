@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     conversation_engine: str = "deterministic"
     openclaw_base_url: str = ""
     openclaw_timeout_seconds: int = 15
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_timeout_seconds: int = 15
 
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False
