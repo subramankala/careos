@@ -131,3 +131,30 @@ def test_fallback_bridge_unknown_text_returns_guidance() -> None:
     )
     assert response.status_code == 200
     assert "I can help with schedule, next, status" in response.json()["text"]
+
+
+def test_fallback_bridge_medication_count_query_returns_count() -> None:
+    participant_context, _ = _seed_context_and_win("whatsapp:+15550110004", title="Count Med")
+    mark_done = client.post(
+        "/v1/careos/fallback",
+        json={
+            "text": "mark 1 done",
+            "participant_context": participant_context,
+            "allowed_actions": ["read", "write_via_mcp"],
+        },
+    )
+    assert mark_done.status_code == 200
+    assert "Marked 1 as completed." in mark_done.json()["text"]
+
+    response = client.post(
+        "/v1/careos/fallback",
+        json={
+            "text": "how many medications I took today?",
+            "participant_context": participant_context,
+            "allowed_actions": ["read", "write_via_mcp"],
+        },
+    )
+    assert response.status_code == 200
+    text = response.json()["text"]
+    assert "You completed" in text
+    assert "scheduled medications today" in text

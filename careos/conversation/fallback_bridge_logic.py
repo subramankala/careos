@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 
 from careos.conversation.deterministic_router import DeterministicRouter
+from careos.domain.enums.core import WinState
 from careos.domain.models.api import ParticipantContext
 from careos.services.win_service import WinService
 
@@ -41,6 +43,21 @@ def map_plain_english_to_command(text: str) -> str | None:
 
 
 def resolve_fallback_text(text: str, participant_context: ParticipantContext, win_service: WinService) -> str:
+    lower = text.strip().lower()
+    if (
+        ("how many" in lower or "count" in lower)
+        and ("medication" in lower or "medications" in lower or "meds" in lower)
+        and ("took" in lower or "taken" in lower or "completed" in lower)
+        and "today" in lower
+    ):
+        today = win_service.today(participant_context.patient_id, at=datetime.now(UTC))
+        med_items = [item for item in today.timeline if item.category.strip().lower() == "medication"]
+        completed_meds = [item for item in med_items if item.current_state == WinState.COMPLETED]
+        return (
+            f"You completed {len(completed_meds)} of {len(med_items)} scheduled medications today "
+            f"({today.date}, {today.timezone})."
+        )
+
     mapped = map_plain_english_to_command(text)
     if mapped is None:
         return (
@@ -53,5 +70,13 @@ def resolve_fallback_text(text: str, participant_context: ParticipantContext, wi
 
 
 def fallback_intent(text: str) -> str:
+    lower = text.strip().lower()
+    if (
+        ("how many" in lower or "count" in lower)
+        and ("medication" in lower or "medications" in lower or "meds" in lower)
+        and ("took" in lower or "taken" in lower or "completed" in lower)
+        and "today" in lower
+    ):
+        return "medication_count_today"
     mapped = map_plain_english_to_command(text)
     return mapped or "unmapped"
