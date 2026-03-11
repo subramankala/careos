@@ -158,3 +158,32 @@ def test_fallback_bridge_medication_count_query_returns_count() -> None:
     text = response.json()["text"]
     assert "You completed" in text
     assert "scheduled medications today" in text
+
+
+def test_fallback_bridge_total_meds_phrase_returns_count() -> None:
+    participant_context, _ = _seed_context_and_win("whatsapp:+15550110005", title="Count Med 2")
+    response = client.post(
+        "/v1/careos/fallback",
+        json={
+            "text": "what is total count of meds I took today?",
+            "participant_context": participant_context,
+            "allowed_actions": ["read"],
+        },
+    )
+    assert response.status_code == 200
+    assert "scheduled medications today" in response.json()["text"]
+
+
+def test_fallback_bridge_tomorrow_schedule_returns_tomorrow_block() -> None:
+    participant_context, _ = _seed_context_and_win("whatsapp:+15550110006", title="Tomorrow Med")
+    response = client.post(
+        "/v1/careos/fallback",
+        json={
+            "text": "what is scheduled for tomorrow?",
+            "participant_context": participant_context,
+            "allowed_actions": ["read"],
+        },
+    )
+    assert response.status_code == 200
+    text = response.json()["text"]
+    assert "Tomorrow schedule" in text or "no wins scheduled" in text
