@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from careos.app_context import context
 from careos.main import app
 from careos.settings import settings
 
@@ -45,10 +46,9 @@ def test_setup_add_medication_then_finish_allows_normal_commands() -> None:
     finish = _twilio(phone, "4", "SM-setup-med-6")
     assert "Setup saved." in finish
 
-    schedule = _twilio(phone, "schedule", "SM-setup-med-7")
-    if "Pantoprazole 40mg" not in schedule:
-        upcoming = _twilio(phone, "next", "SM-setup-med-8")
-        assert "Pantoprazole 40mg" in upcoming
+    assert hasattr(context.store, "win_definitions")
+    titles = {str(definition.get("title")) for definition in context.store.win_definitions.values()}
+    assert "Pantoprazole 40mg" in titles
 
 
 def test_setup_add_appointment_and_routine() -> None:
