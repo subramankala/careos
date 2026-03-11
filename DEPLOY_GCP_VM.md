@@ -72,15 +72,17 @@ Unit sources in repo:
 
 - `deploy/systemd/careos-lite-api.service`
 - `deploy/systemd/careos-lite-scheduler.service`
+- `deploy/systemd/careos-lite-mcp.service`
 
 ## 5. Reload and start services
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable careos-lite-api careos-lite-scheduler
-sudo systemctl start careos-lite-api careos-lite-scheduler
+sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp
+sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp
 sudo systemctl status careos-lite-api --no-pager
 sudo systemctl status careos-lite-scheduler --no-pager
+sudo systemctl status careos-lite-mcp --no-pager
 ```
 
 ## 6. Twilio webhook config
@@ -97,6 +99,45 @@ Method: `POST`
 curl -s http://127.0.0.1:8115/health
 sudo journalctl -u careos-lite-api -n 100 --no-pager
 sudo journalctl -u careos-lite-scheduler -n 100 --no-pager
+sudo journalctl -u careos-lite-mcp -n 100 --no-pager
+```
+
+## 8. MCP for OpenClaw/agents
+
+Set in `.env`:
+
+- `CAREOS_MCP_API_KEY=<strong-secret>`
+- `CAREOS_MCP_CAREOS_BASE_URL=http://127.0.0.1:8115`
+- `CAREOS_MCP_ALLOWED_WRITE_ROLES=caregiver,patient,clinician,admin`
+
+Health check:
+
+```bash
+curl -s http://127.0.0.1:8110/health
+```
+
+Tool list:
+
+```bash
+curl -s http://127.0.0.1:8110/mcp/tools \
+  -H "x-mcp-api-key: $CAREOS_MCP_API_KEY"
+```
+
+Example write tool call:
+
+```bash
+curl -s -X POST http://127.0.0.1:8110/mcp/call \
+  -H "x-mcp-api-key: $CAREOS_MCP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool":"careos_complete_win",
+    "arguments":{
+      "win_instance_id":"<win_instance_id>",
+      "actor_id":"<participant_id>",
+      "actor_role":"caregiver",
+      "reason":"patient confirmed completion"
+    }
+  }'
 ```
 
 Then send WhatsApp message from a mapped participant number:

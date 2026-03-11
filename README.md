@@ -11,6 +11,7 @@ Production-oriented, multi-tenant CareOS backend for WhatsApp + voice orchestrat
 - Policy engine for criticality + flexibility + persona behavior
 - Idempotent outbound message event logging
 - Scheduler worker loop for due reminders + escalation checks
+- MCP server for authenticated agent tool-calling (`Agent/OpenClaw -> MCP -> FastAPI`)
 - Tests for patient isolation across shared business number traffic
 
 ## Quick start
@@ -71,8 +72,8 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_
 4. Reload and start services:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable careos-lite-api careos-lite-scheduler
-sudo systemctl start careos-lite-api careos-lite-scheduler
+sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp
+sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp
 ```
 5. Verify:
 ```bash
@@ -94,6 +95,9 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_ONBOARDING_VERIFICATION_TTL_HOURS` (default `48`; caregiver verification request expiry)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
+- `CAREOS_MCP_API_KEY` (required when exposing MCP)
+- `CAREOS_MCP_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
+- `CAREOS_MCP_ALLOWED_WRITE_ROLES` (default `caregiver,patient,clinician,admin`)
 - Full template: [.env.example](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/.env.example)
 
 ## Migration
@@ -130,6 +134,11 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_
 - `POST /wins/{id}/skip`
 - `POST /wins/{id}/escalate`
 - `GET /patients/{id}/adherence-summary`
+
+MCP endpoints:
+- `GET /health` (on MCP service port)
+- `GET /mcp/tools`
+- `POST /mcp/call`
 
 WhatsApp command additions for multi-patient caregiver flow:
 - `patients`
@@ -168,6 +177,8 @@ DB reset helper:
 The deployment path remains:
 `Twilio -> FastAPI -> services/policy/conversation -> Twilio`.
 The conversation engine is intentionally behind FastAPI and must not call Twilio directly.
+Agent path is:
+`Agent/OpenClaw -> MCP server -> FastAPI -> services/policy/conversation -> Postgres`.
 
 ## Pilot safety notes
 
