@@ -961,6 +961,22 @@ class PostgresStore(Store):
         created += self.ensure_recurrence_instances(payload.patient_id, datetime.now(UTC))
         return {"created": created}
 
+    def get_active_care_plan_for_patient(self, patient_id: str) -> dict | None:
+        sql = """
+        SELECT id, patient_id, created_by_participant_id, status, version, effective_start, effective_end, source_type
+        FROM care_plans
+        WHERE patient_id = %s
+          AND status = 'active'
+        ORDER BY version DESC, created_at DESC
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (patient_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         normalized = _normalize_phone(phone_number)
         participant_sql = """
