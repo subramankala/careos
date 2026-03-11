@@ -14,6 +14,7 @@ from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
     LinkedPatientSummary,
+    OnboardingSession,
     ParticipantIdentity,
     ParticipantContext,
     ParticipantCreate,
@@ -40,6 +41,10 @@ class Store(ABC):
 
     @abstractmethod
     def create_participant(self, payload: ParticipantCreate) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def find_participant_record_by_phone(self, phone_number: str) -> dict | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -76,6 +81,23 @@ class Store(ABC):
 
     @abstractmethod
     def clear_active_patient_context(self, participant_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_onboarding_session(self, phone_number: str) -> OnboardingSession | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_onboarding_session(
+        self,
+        *,
+        phone_number: str,
+        state: str,
+        status: str,
+        data: dict,
+        expires_at: datetime,
+        completion_note: str = "",
+    ) -> OnboardingSession:
         raise NotImplementedError
 
     @abstractmethod
@@ -146,6 +168,7 @@ class InMemoryStore(Store):
         self.message_idempotency: set[str] = set()
         self.default_patient_for_participant: dict[str, str] = {}
         self.active_patient_context: dict[str, dict] = {}
+        self.onboarding_sessions: dict[str, dict] = {}
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -167,6 +190,23 @@ class InMemoryStore(Store):
         row["id"] = pid
         self.participants[pid] = row
         return row
+
+    def find_participant_record_by_phone(self, phone_number: str) -> dict | None:
+        normalized = _normalize_phone(phone_number)
+        participant = next(
+            (p for p in self.participants.values() if _normalize_phone(str(p["phone_number"])) == normalized),
+            None,
+        )
+        if participant is None:
+            return None
+        return {
+            "id": str(participant["id"]),
+            "tenant_id": str(participant["tenant_id"]),
+            "role": str(participant["role"]),
+            "display_name": str(participant["display_name"]),
+            "phone_number": str(participant["phone_number"]),
+            "active": bool(participant["active"]),
+        }
 
     def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
         link = {
@@ -299,6 +339,40 @@ class InMemoryStore(Store):
 
     def clear_active_patient_context(self, participant_id: str) -> None:
         self.active_patient_context.pop(str(participant_id), None)
+
+    def get_onboarding_session(self, phone_number: str) -> OnboardingSession | None:
+        normalized = _normalize_phone(phone_number)
+        row = self.onboarding_sessions.get(normalized)
+        if row is None:
+            return None
+        return OnboardingSession.model_validate(row)
+
+    def save_onboarding_session(
+        self,
+        *,
+        phone_number: str,
+        state: str,
+        status: str,
+        data: dict,
+        expires_at: datetime,
+        completion_note: str = "",
+    ) -> OnboardingSession:
+        normalized = _normalize_phone(phone_number)
+        existing = self.onboarding_sessions.get(normalized)
+        session_id = str(existing["id"]) if existing else str(uuid4())
+        now = datetime.now(UTC)
+        row = {
+            "id": session_id,
+            "phone_number": normalized,
+            "state": state,
+            "status": status,
+            "data": data,
+            "expires_at": _ensure_utc(expires_at),
+            "completion_note": completion_note,
+            "updated_at": now,
+        }
+        self.onboarding_sessions[normalized] = row
+        return OnboardingSession.model_validate(row)
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
         identity = self.resolve_participant_by_phone(phone_number)
@@ -562,6 +636,31 @@ class PostgresStore(Store):
             cur.execute(sql, payload.model_dump(mode="json"))
             return _row_dict(cur, cur.fetchone())
 
+    def find_participant_record_by_phone(self, phone_number: str) -> dict | None:
+        normalized = _normalize_phone(phone_number)
+        sql = """
+        SELECT id, tenant_id, role, display_name, phone_number, active
+        FROM participants
+        WHERE regexp_replace(replace(phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
+              = regexp_replace(%(phone)s, '[^0-9+]', '', 'g')
+        ORDER BY active DESC, created_at DESC
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"phone": normalized})
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            return {
+                "id": str(data["id"]),
+                "tenant_id": str(data["tenant_id"]),
+                "role": str(data["role"]),
+                "display_name": str(data["display_name"]),
+                "phone_number": str(data["phone_number"]),
+                "active": bool(data["active"]),
+            }
+
     def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
         sql = """
         INSERT INTO caregiver_patient_links (caregiver_participant_id, patient_id)
@@ -750,6 +849,83 @@ class PostgresStore(Store):
     def clear_active_patient_context(self, participant_id: str) -> None:
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM participant_active_context WHERE participant_id = %s", (participant_id,))
+
+    def get_onboarding_session(self, phone_number: str) -> OnboardingSession | None:
+        normalized = _normalize_phone(phone_number)
+        sql = """
+        SELECT id, phone_number, state, status, data, expires_at, completion_note
+        FROM onboarding_sessions
+        WHERE regexp_replace(replace(phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
+              = regexp_replace(%(phone)s, '[^0-9+]', '', 'g')
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"phone": normalized})
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            return OnboardingSession(
+                id=str(data["id"]),
+                phone_number=str(data["phone_number"]),
+                state=str(data["state"]),
+                status=str(data["status"]),
+                data=dict(data["data"] or {}),
+                expires_at=_ensure_dt(data["expires_at"]),
+                completion_note=str(data.get("completion_note") or ""),
+            )
+
+    def save_onboarding_session(
+        self,
+        *,
+        phone_number: str,
+        state: str,
+        status: str,
+        data: dict,
+        expires_at: datetime,
+        completion_note: str = "",
+    ) -> OnboardingSession:
+        normalized = _normalize_phone(phone_number)
+        sql = """
+        INSERT INTO onboarding_sessions (phone_number, state, status, data, expires_at, completion_note)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+        ON CONFLICT (phone_number)
+        DO UPDATE SET
+          state = EXCLUDED.state,
+          status = EXCLUDED.status,
+          data = EXCLUDED.data,
+          expires_at = EXCLUDED.expires_at,
+          completion_note = EXCLUDED.completion_note,
+          updated_at = now(),
+          completed_at = CASE
+            WHEN EXCLUDED.status IN ('completed', 'handoff_pending') THEN now()
+            ELSE onboarding_sessions.completed_at
+          END
+        RETURNING id, phone_number, state, status, data, expires_at, completion_note
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    normalized,
+                    state,
+                    status,
+                    json.dumps(data or {}),
+                    _ensure_utc(expires_at),
+                    completion_note,
+                ),
+            )
+            row = cur.fetchone()
+            data_row = _row_dict(cur, row)
+            return OnboardingSession(
+                id=str(data_row["id"]),
+                phone_number=str(data_row["phone_number"]),
+                state=str(data_row["state"]),
+                status=str(data_row["status"]),
+                data=dict(data_row["data"] or {}),
+                expires_at=_ensure_dt(data_row["expires_at"]),
+                completion_note=str(data_row.get("completion_note") or ""),
+            )
 
     def resolve_participant_context(self, phone_number: str) -> ParticipantContext | None:
         identity = self.resolve_participant_by_phone(phone_number)

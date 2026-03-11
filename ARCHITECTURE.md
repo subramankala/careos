@@ -4,11 +4,12 @@
 
 1. Twilio sends inbound webhook to `POST /twilio/webhook`.
 2. FastAPI validates signature and parses sender (`From`) + message text (`Body`).
-3. `IdentityService` resolves participant by phone number and active patient context.
-4. Inbound message is persisted in `message_events`.
-5. `DeterministicRouter` executes command using `WinService`.
-6. Outbound response is persisted in `message_events` with idempotency key.
-7. FastAPI returns TwiML response.
+3. Unknown or incomplete senders enter `OnboardingService` state machine (`myself` vs `someone I care for`) with persisted session state.
+4. Known senders resolve through `IdentityService` with active patient context rules.
+5. Inbound message is persisted in `message_events` only after patient context is resolved.
+6. `DeterministicRouter` executes command using `WinService`.
+7. Outbound response is persisted in `message_events` with idempotency key.
+8. FastAPI returns TwiML response.
 
 ## Scheduler Flow
 
@@ -51,7 +52,8 @@
 
 ## Known Pilot Limitations
 
-- Ambiguous caregiver mappings currently return a generic \"not matched\" style reply; there is no interactive patient-selector flow yet.
+- Caregiver onboarding currently ends in `handoff_pending`; patient approval/verification workflow is not yet enforced.
+- Onboarding sessions expire by TTL and restart from role selection; there is no admin endpoint yet to inspect or override sessions.
 - If upstream proxy/TLS URL configuration is wrong, Twilio signature checks will fail closed until `CAREOS_PUBLIC_WEBHOOK_BASE_URL` is corrected.
 - Scheduler uses idempotent writes for duplicate protection, but does not yet include advisory locking/leader election.
 

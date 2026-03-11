@@ -251,6 +251,30 @@ Current runtime status:
 - OCR ingestion flow not enabled.
 - No active OpenClaw conversational orchestration in runtime path.
 - Scheduler currently uses configured patient allowlist (`CAREOS_SCHEDULER_PATIENT_IDS`) for pilot control.
+- Caregiver onboarding currently marks `handoff_pending` but does not enforce patient approval workflow yet.
+
+## 16) WhatsApp Onboarding State Machine (Phase A)
+
+Unknown or incomplete senders now enter a structured onboarding wizard over WhatsApp.
+
+Session storage:
+- table: `onboarding_sessions`
+- key: one row per sender phone number
+- persisted fields: `state`, `status`, `data`, `expires_at`, `completion_note`
+
+Supported entry branches:
+- `myself`
+- `someone I care for`
+
+State flow:
+- `choose_role`
+- `self_patient_name` -> `completed`
+- `caregiver_name` -> `caregiver_patient_name` -> `caregiver_patient_phone` -> `caregiver_relationship` -> `handoff_pending`
+
+Resume/expiration:
+- active sessions resume from the last saved state
+- expiration uses `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default 24 hours)
+- expired sessions are marked expired and restart at `choose_role`
 
 ## 15) Documentation Sync Policy
 

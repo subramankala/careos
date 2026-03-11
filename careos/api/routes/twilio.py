@@ -122,11 +122,25 @@ async def twilio_webhook(request: Request) -> Response:
         correlation_id = f"fallback_{hashlib.sha256(body_bytes).hexdigest()}"
 
     identity = context.identity_service.resolve_participant_by_phone(sender)
-    if identity is None:
-        unknown = "We could not match this number to a CareOS profile. Ask your caregiver to complete onboarding."
-        return Response(content=message_response(unknown), media_type="text/xml")
+    linked_patients: list[LinkedPatientSummary] = []
+    if identity is not None:
+        linked_patients = context.identity_service.list_linked_patients(identity.participant_id)
 
-    linked_patients = context.identity_service.list_linked_patients(identity.participant_id)
+    onboarding_reply = context.onboarding.maybe_handle_message(
+        sender_phone=sender,
+        body=body,
+        identity=identity,
+        linked_patient_count=len(linked_patients),
+    )
+    if onboarding_reply is not None:
+        return Response(content=message_response(onboarding_reply), media_type="text/xml")
+
+    if identity is None:
+        return Response(
+            content=message_response("Could not resolve sender identity. Reply 'hi' to start onboarding."),
+            media_type="text/xml",
+        )
+
     preflight_text, selected_patient_id = _resolve_context_for_message(body, identity, linked_patients)
     if selected_patient_id is None:
         return Response(content=message_response(preflight_text), media_type="text/xml")

@@ -60,6 +60,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -88,6 +89,7 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_TWILIO_WHATSAPP_NUMBER` (required for proactive scheduler WhatsApp pushes)
 - `CAREOS_VALIDATE_TWILIO_SIGNATURE=true|false` (default `true`)
 - `CAREOS_PUBLIC_WEBHOOK_BASE_URL` (optional; recommended in production)
+- `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default `24`; WhatsApp onboarding session resume window)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
 - Full template: [.env.example](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/.env.example)
@@ -101,6 +103,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 ```
 
 ## Core endpoints
@@ -130,6 +133,11 @@ WhatsApp command additions for multi-patient caregiver flow:
 - `switch`
 - `use <n|patient_id>`
 - `whoami` (now reports active context status)
+
+WhatsApp onboarding (unknown/incomplete sender):
+- entry asks: `myself` or `someone I care for`
+- self flow captures patient name and completes profile creation
+- caregiver flow captures caregiver name, patient name, patient phone, relationship and ends in handoff-pending state
 
 ## Architecture doc
 

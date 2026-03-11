@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False
     voice_caller_id: str = ""
+    onboarding_session_ttl_hours: int = 24
 
 
 settings = Settings()

@@ -17,5 +17,6 @@ def reset_in_memory_store() -> None:
     context.win_service.store = store
     context.care_plan_edits.store = store
     context.messaging.store = store
+    context.onboarding.store = store
     yield
     settings.use_in_memory = previous_use_in_memory

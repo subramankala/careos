@@ -37,7 +37,11 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0001_initial.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0002_care_plan_deltas.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 ```
+
+WhatsApp onboarding session TTL is controlled by:
+- `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default: `24`)
 
 ## Onboard New Patient + WhatsApp Caregiver
 
@@ -57,6 +61,31 @@ curl -s -X POST "$BASE/patients" \
     \"status\":\"active\"
   }" | python3 -m json.tool
 ```
+
+## WhatsApp Self-Onboarding (No API calls)
+
+For an unknown sender number, message the Twilio WhatsApp number:
+
+1. `hi`
+2. `myself`
+3. `<full name>`
+
+Expected completion response:
+- `Done. Profile created for <name>. Reply 'schedule' to see today.`
+
+## WhatsApp Caregiver-Onboarding (No API calls)
+
+For an unknown caregiver sender number, message:
+
+1. `hi`
+2. `someone I care for`
+3. `<caregiver name>`
+4. `<patient name>`
+5. `+<countrycode><patient number>`
+6. `<relationship>`
+
+Expected completion response:
+- `Saved. <patient> is added. Handoff pending: ask patient to message CareOS from their WhatsApp.`
 
 2) Create WhatsApp participant:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from pydantic import BaseModel, Field
 
 from careos.domain.enums.core import Criticality, Flexibility, PersonaType, RecurrenceType, Role, WinState
@@ -148,6 +149,16 @@ class LinkedPatientSummary(BaseModel):
     display_name: str
     timezone: str
     tenant_id: str
+
+
+class OnboardingSession(BaseModel):
+    id: str
+    phone_number: str
+    state: str
+    status: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime
+    completion_note: str = ""
 
 
 class CommandResult(BaseModel):
