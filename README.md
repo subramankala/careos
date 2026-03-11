@@ -149,8 +149,10 @@ WhatsApp command additions for multi-patient caregiver flow:
 Plain-English fallback mode:
 - Keep deterministic commands as primary path.
 - Set `CAREOS_CONVERSATION_ENGINE=openclaw` to enable fallback only when deterministic routing returns unknown command.
-- FastAPI calls OpenClaw endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`
-- OpenClaw should use MCP tools for reads/writes and return `{ "text": "...", "action": "openclaw_fallback" }`.
+- FastAPI calls fallback endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`.
+- `careos-lite` now exposes a local bridge endpoint at `/v1/careos/fallback` that maps common plain-English requests to deterministic commands.
+- Recommended VM setting for local bridge: `CAREOS_OPENCLAW_BASE_URL=http://127.0.0.1:8115`.
+- External OpenClaw can still be used by pointing `CAREOS_OPENCLAW_BASE_URL` at that service URL if it implements the same fallback contract.
 - If OpenClaw is unavailable/error, FastAPI returns the normal deterministic fallback text.
 
 WhatsApp onboarding (unknown/incomplete sender):

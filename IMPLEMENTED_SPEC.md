@@ -240,16 +240,17 @@ Repository tests include:
 ## 13) OpenClaw Status
 
 Current runtime status:
-- OpenClaw is not actively wired into the request path.
-- `openclaw_engine.py` exists as placeholder abstraction.
-- App context currently binds deterministic router.
+- Deterministic router remains primary for all WhatsApp traffic.
+- If deterministic returns `fallback` and `CAREOS_CONVERSATION_ENGINE=openclaw`, FastAPI invokes `OpenClawConversationEngine`.
+- `careos-lite` exposes `/v1/careos/fallback` bridge endpoint so fallback can run locally without external OpenClaw APIs.
+- Bridge maps compact plain-English requests into deterministic commands (`schedule`, `next`, `status`, `done`, `skip`, `delay`) and returns user-facing text.
 
 ## 14) Known Limitations
 
 - Inbound context resolution requires unambiguous single-patient mapping per sender participant.
 - No clinician dashboard/UI.
 - OCR ingestion flow not enabled.
-- No active OpenClaw conversational orchestration in runtime path.
+- Plain-English bridge currently uses rule-based command mapping and does not do deep NLU.
 - Scheduler currently uses configured patient allowlist (`CAREOS_SCHEDULER_PATIENT_IDS`) for pilot control.
 - Verification is based on WhatsApp phone ownership and approval code; no secondary identity check (OTP/KYC) yet.
 
