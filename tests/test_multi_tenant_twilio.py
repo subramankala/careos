@@ -3,6 +3,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from careos.app_context import context
+from careos.domain.models.api import CommandResult
 from careos.main import app
 from careos.settings import settings
 
@@ -490,3 +492,65 @@ def test_use_unlinked_patient_id_is_blocked() -> None:
     )
     assert blocked.status_code == 200
     assert "Invalid selection." in blocked.text
+
+
+def test_openclaw_fallback_used_for_unknown_command_when_enabled(monkeypatch) -> None:
+    settings.validate_twilio_signature = False
+    previous_engine = settings.conversation_engine
+    try:
+        settings.conversation_engine = "openclaw"
+        tenant = client.post(
+            "/tenants",
+            json={"name": "OpenClawFallback", "type": "family", "timezone": "UTC", "status": "active"},
+        ).json()
+        _seed_patient(tenant["id"], "whatsapp:+15550006601", "Fallback Dose")
+
+        def _fake_handle(text: str, participant_context):
+            assert text == "what is pending now?"
+            return CommandResult(action="openclaw_fallback", text="You still have 1 pending item at 08:00.")
+
+        monkeypatch.setattr(context.openclaw_router, "handle", _fake_handle)
+        response = client.post(
+            "/twilio/webhook",
+            data={
+                "From": "whatsapp:+15550006601",
+                "To": "whatsapp:+15558889999",
+                "Body": "what is pending now?",
+                "MessageSid": "SM_openclaw_fallback",
+            },
+        )
+        assert response.status_code == 200
+        assert "You still have 1 pending item at 08:00." in response.text
+    finally:
+        settings.conversation_engine = previous_engine
+
+
+def test_openclaw_unavailable_keeps_deterministic_fallback(monkeypatch) -> None:
+    settings.validate_twilio_signature = False
+    previous_engine = settings.conversation_engine
+    try:
+        settings.conversation_engine = "openclaw"
+        tenant = client.post(
+            "/tenants",
+            json={"name": "OpenClawUnavailable", "type": "family", "timezone": "UTC", "status": "active"},
+        ).json()
+        _seed_patient(tenant["id"], "whatsapp:+15550006602", "Fallback Dose 2")
+
+        monkeypatch.setattr(
+            context.openclaw_router,
+            "handle",
+            lambda text, participant_context: CommandResult(action="unavailable", text=""),
+        )
+        response = client.post(
+            "/twilio/webhook",
+            data={
+                "From": "whatsapp:+15550006602",
+                "To": "whatsapp:+15558889999",
+                "Body": "tell me in english",
+                "MessageSid": "SM_openclaw_unavail",
+            },
+        )
+        assert response.status_code == 200
+        assert "I can handle:" in response.text
+    finally:
+        settings.conversation_engine = previous_engine

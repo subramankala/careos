@@ -1,4 +1,5 @@
 from careos.conversation.deterministic_router import DeterministicRouter
+from careos.conversation.openclaw_engine import OpenClawConversationEngine
 from careos.db.repositories.store import InMemoryStore, PostgresStore, Store
 from careos.services.care_plan_edit_service import CarePlanEditService
 from careos.services.identity_service import IdentityService
@@ -25,6 +26,10 @@ class AppContext:
         self.messaging = MessageOrchestrator(self.store)
         self.onboarding = OnboardingService(self.store)
         self.router = DeterministicRouter(self.win_service)
+        self.openclaw_router = OpenClawConversationEngine(
+            base_url=settings.openclaw_base_url,
+            timeout_seconds=settings.openclaw_timeout_seconds,
+        )
 
 
 context = AppContext()

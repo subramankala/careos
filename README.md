@@ -146,6 +146,13 @@ WhatsApp command additions for multi-patient caregiver flow:
 - `use <n|patient_id>`
 - `whoami` (now reports active context status)
 
+Plain-English fallback mode:
+- Keep deterministic commands as primary path.
+- Set `CAREOS_CONVERSATION_ENGINE=openclaw` to enable fallback only when deterministic routing returns unknown command.
+- FastAPI calls OpenClaw endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`
+- OpenClaw should use MCP tools for reads/writes and return `{ "text": "...", "action": "openclaw_fallback" }`.
+- If OpenClaw is unavailable/error, FastAPI returns the normal deterministic fallback text.
+
 WhatsApp onboarding (unknown/incomplete sender):
 - entry asks: `myself` or `someone I care for`
 - self flow captures patient name and completes profile creation
