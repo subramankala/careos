@@ -167,6 +167,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_prn_definitions(self, patient_id: str) -> list[dict[str, str]]:
+        raise NotImplementedError
+
+    @abstractmethod
     def next_item(self, patient_id: str, now: datetime) -> TimelineItem | None:
         raise NotImplementedError
 
@@ -636,6 +640,32 @@ class InMemoryStore(Store):
                 )
             )
         return sorted(rows, key=lambda item: item.scheduled_start)
+
+    def list_prn_definitions(self, patient_id: str) -> list[dict[str, str]]:
+        active_plan = self.get_active_care_plan_for_patient(patient_id)
+        if active_plan is None:
+            return []
+        active_plan_id = str(active_plan["id"])
+        out: list[dict[str, str]] = []
+        for definition_id, definition in self.win_definitions.items():
+            if str(definition.get("care_plan_id")) != active_plan_id:
+                continue
+            title = str(definition.get("title") or "")
+            instructions = str(definition.get("instructions") or "")
+            combined = f"{title} {instructions}".lower()
+            is_prn_keyword = any(token in combined for token in ("sos", "prn", "as needed", "if needed"))
+            if not is_prn_keyword:
+                continue
+            has_active_instances = any(
+                str(instance.get("win_definition_id")) == str(definition_id)
+                and instance.get("current_state") != WinState.SUPERSEDED
+                for instance in self.win_instances.values()
+            )
+            if has_active_instances:
+                continue
+            out.append({"title": title, "instructions": instructions})
+        out.sort(key=lambda item: item["title"].casefold())
+        return out
 
     def ensure_recurrence_instances(self, patient_id: str, now: datetime, horizon_days: int = 30) -> int:
         profile = self.get_patient_profile(patient_id)
@@ -1487,6 +1517,42 @@ class PostgresStore(Store):
                         scheduled_end=data["scheduled_end"],
                         current_state=state,
                     )
+                )
+            return rows
+
+    def list_prn_definitions(self, patient_id: str) -> list[dict[str, str]]:
+        sql = """
+        SELECT wd.id, wd.title, wd.instructions
+        FROM win_definitions wd
+        JOIN care_plans cp ON cp.id = wd.care_plan_id
+        WHERE cp.patient_id = %(patient_id)s
+          AND cp.status = 'active'
+          AND (
+            lower(wd.title) LIKE '%%sos%%'
+            OR lower(wd.title) LIKE '%%prn%%'
+            OR lower(wd.instructions) LIKE '%%as needed%%'
+            OR lower(wd.instructions) LIKE '%%if needed%%'
+            OR lower(wd.instructions) LIKE '%%sos%%'
+            OR lower(wd.instructions) LIKE '%%prn%%'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM win_instances wi
+            WHERE wi.win_definition_id = wd.id
+              AND wi.current_state <> 'superseded'
+          )
+        ORDER BY wd.title ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"patient_id": patient_id})
+            rows = []
+            for row in cur.fetchall():
+                data = _row_dict(cur, row)
+                rows.append(
+                    {
+                        "title": str(data["title"] or ""),
+                        "instructions": str(data["instructions"] or ""),
+                    }
                 )
             return rows
 

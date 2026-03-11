@@ -209,6 +209,84 @@ def test_done_command_accepts_schedule_item_number() -> None:
     assert status.json()["completed_count"] >= 1
 
 
+def test_schedule_includes_prn_section_without_timed_instances() -> None:
+    settings.validate_twilio_signature = False
+    tenant = client.post(
+        "/tenants",
+        json={"name": "PrnTenant", "type": "family", "timezone": "UTC", "status": "active"},
+    ).json()
+    patient = client.post(
+        "/patients",
+        json={
+            "tenant_id": tenant["id"],
+            "display_name": "PRN Patient",
+            "timezone": "UTC",
+            "primary_language": "en",
+            "persona_type": "caregiver_managed_elder",
+            "risk_level": "medium",
+            "status": "active",
+        },
+    ).json()
+    participant = client.post(
+        "/participants",
+        json={
+            "tenant_id": tenant["id"],
+            "role": "patient",
+            "display_name": "PRN User",
+            "phone_number": "whatsapp:+15550005555",
+            "preferred_channel": "whatsapp",
+            "preferred_language": "en",
+            "active": True,
+        },
+    ).json()
+    client.post("/caregiver-links", json={"caregiver_participant_id": participant["id"], "patient_id": patient["id"]})
+    plan = client.post(
+        "/care-plans",
+        json={
+            "patient_id": patient["id"],
+            "created_by_participant_id": participant["id"],
+            "status": "active",
+            "version": 1,
+            "source_type": "manual",
+        },
+    ).json()
+
+    # Insert PRN definition with no scheduled instances.
+    client.post(
+        f"/care-plans/{plan['id']}/wins",
+        json={
+            "patient_id": patient["id"],
+            "definitions": [
+                {
+                    "category": "medication",
+                    "title": "Sorbitrate 5mg (SOS)",
+                    "instructions": "Use only if chest pain occurs",
+                    "criticality": "high",
+                    "flexibility": "flexible",
+                    "recurrence_type": "one_off",
+                    "recurrence_interval": 1,
+                    "recurrence_days_of_week": [],
+                }
+            ],
+            "instances": [],
+        },
+    )
+
+    response = client.post(
+        "/twilio/webhook",
+        data={
+            "From": "whatsapp:+15550005555",
+            "To": "whatsapp:+15558889999",
+            "Body": "schedule",
+            "MessageSid": "SM_prn_schedule",
+        },
+    )
+    assert response.status_code == 200
+    xml = response.text
+    assert "SOS/PRN (as needed):" in xml
+    assert "Sorbitrate 5mg (SOS)" in xml
+
+
 def test_whoami_returns_active_context() -> None:
     settings.validate_twilio_signature = False
     tenant = client.post(

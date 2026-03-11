@@ -1,0 +1,32 @@
+{
+  "tenant": {
+    "name": "Kumar Mankala Family",
+    "timezone": "Asia/Kolkata"
+  },
+  "patients": [
+    {
+      "patient_name": "Nageswara Rao",
+      "patient_phone": "+919010457173",
+      "caregiver_name": "Kumar Mankala",
+      "caregiver_phone": "+14085157095",
+      "relationship": "family",
+      "persona_type": "caregiver_managed_elder",
+      "timezone": "Asia/Kolkata",
+      "replace_existing": true,
+      "enable_setup_menu": false,
+      "plan_json": "./patient_daily_support_plan_mankala_nageswara_rao.json"
+    },
+    {
+      "patient_name": "Indira Devi",
+      "patient_phone": "+919949353918",
+      "caregiver_name": "Kumar Mankala",
+      "caregiver_phone": "+14085157095",
+      "relationship": "family",
+      "persona_type": "caregiver_managed_elder",
+      "timezone": "Asia/Kolkata",
+      "replace_existing": true,
+      "enable_setup_menu": true,
+      "plan_json": "./patient_daily_support_plan_mankala_nageswara_rao.json"
+    }
+  ]
+}

@@ -26,7 +26,8 @@ class DeterministicRouter(ConversationEngine):
 
         if command in {"schedule", "today"}:
             today = self.win_service.today(context.patient_id)
-            if not today.timeline:
+            prn_items = self.win_service.prn_definitions(context.patient_id)
+            if not today.timeline and not prn_items:
                 return CommandResult(action="schedule", text="No wins are scheduled for today.")
             tz = ZoneInfo(today.timezone)
             lines = [f"Schedule ({today.date}):"]
@@ -35,6 +36,16 @@ class DeterministicRouter(ConversationEngine):
                 lines.append(
                     f"{index}. {local_time} {item.title} [{item.current_state.value}]"
                 )
+            if prn_items:
+                if today.timeline:
+                    lines.append("")
+                lines.append("SOS/PRN (as needed):")
+                for index, item in enumerate(prn_items, start=1):
+                    instructions = item.get("instructions", "").strip()
+                    if instructions:
+                        lines.append(f"P{index}. {item['title']} - {instructions}")
+                    else:
+                        lines.append(f"P{index}. {item['title']}")
             return CommandResult(action="schedule", text="\n".join(lines))
 
         if command == "next":

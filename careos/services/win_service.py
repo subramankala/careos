@@ -38,6 +38,9 @@ class WinService:
         local_time = item.scheduled_start.astimezone(timezone).strftime("%H:%M")
         return f"Next: {local_time} {item.title} [{item.current_state.value}]"
 
+    def prn_definitions(self, patient_id: str) -> list[dict[str, str]]:
+        return self.store.list_prn_definitions(patient_id)
+
     def status(self, patient_id: str, at: datetime | None = None) -> PatientStatusResponse:
         now = at or datetime.now(UTC)
         self.store.ensure_recurrence_instances(patient_id, now)
