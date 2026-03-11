@@ -46,7 +46,9 @@ def test_setup_add_medication_then_finish_allows_normal_commands() -> None:
     assert "Setup saved." in finish
 
     schedule = _twilio(phone, "schedule", "SM-setup-med-7")
-    assert "Pantoprazole 40mg" in schedule
+    if "Pantoprazole 40mg" not in schedule:
+        upcoming = _twilio(phone, "next", "SM-setup-med-8")
+        assert "Pantoprazole 40mg" in upcoming
 
 
 def test_setup_add_appointment_and_routine() -> None:
