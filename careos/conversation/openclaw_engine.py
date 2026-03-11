@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from careos.conversation.fallback_bridge_logic import resolve_fallback_text
 from careos.conversation.engine_base import ConversationEngine
 from careos.domain.models.api import CommandResult, ParticipantContext
+from careos.settings import settings
+from careos.services.win_service import WinService
 
 
 class OpenClawConversationEngine(ConversationEngine):
@@ -26,13 +30,27 @@ class OpenClawConversationEngine(ConversationEngine):
       }
     """
 
-    def __init__(self, *, base_url: str, timeout_seconds: int = 15) -> None:
+    def __init__(self, *, base_url: str, timeout_seconds: int = 15, win_service: WinService | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = max(int(timeout_seconds), 1)
+        self.win_service = win_service
+
+    def _is_local_bridge_url(self) -> bool:
+        if not self.base_url:
+            return False
+        parsed = urlparse(self.base_url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+        if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+            return False
+        return port in {None, int(settings.api_port)}
 
     def handle(self, text: str, context: ParticipantContext) -> CommandResult:
         if not self.base_url:
             return CommandResult(action="unavailable", text="")
+        if self._is_local_bridge_url() and self.win_service is not None:
+            local_text = resolve_fallback_text(text, context, self.win_service)
+            return CommandResult(action="openclaw_fallback", text=local_text)
 
         payload = {
             "text": text,

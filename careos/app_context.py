@@ -29,6 +29,7 @@ class AppContext:
         self.openclaw_router = OpenClawConversationEngine(
             base_url=settings.openclaw_base_url,
             timeout_seconds=settings.openclaw_timeout_seconds,
+            win_service=self.win_service,
         )
 
 

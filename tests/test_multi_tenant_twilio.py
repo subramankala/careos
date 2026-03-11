@@ -554,3 +554,32 @@ def test_openclaw_unavailable_keeps_deterministic_fallback(monkeypatch) -> None:
         assert "I can handle:" in response.text
     finally:
         settings.conversation_engine = previous_engine
+
+
+def test_openclaw_local_base_url_uses_inprocess_bridge() -> None:
+    settings.validate_twilio_signature = False
+    previous_engine = settings.conversation_engine
+    previous_base_url = settings.openclaw_base_url
+    try:
+        settings.conversation_engine = "openclaw"
+        settings.openclaw_base_url = "http://127.0.0.1:8115"
+        tenant = client.post(
+            "/tenants",
+            json={"name": "OpenClawLocalBridge", "type": "family", "timezone": "UTC", "status": "active"},
+        ).json()
+        _seed_patient(tenant["id"], "whatsapp:+15550006603", "Local Bridge Dose")
+
+        response = client.post(
+            "/twilio/webhook",
+            data={
+                "From": "whatsapp:+15550006603",
+                "To": "whatsapp:+15558889999",
+                "Body": "what is pending today?",
+                "MessageSid": "SM_openclaw_local_bridge",
+            },
+        )
+        assert response.status_code == 200
+        assert "Schedule (" in response.text
+    finally:
+        settings.conversation_engine = previous_engine
+        settings.openclaw_base_url = previous_base_url
