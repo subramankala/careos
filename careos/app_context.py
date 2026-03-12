@@ -32,6 +32,7 @@ class AppContext:
             base_url=settings.openclaw_base_url,
             timeout_seconds=settings.openclaw_timeout_seconds,
             win_service=self.win_service,
+            fallback_path=settings.openclaw_fallback_path,
         )
 
 

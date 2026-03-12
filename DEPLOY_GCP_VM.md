@@ -38,6 +38,7 @@ Required vars to review before start:
 - `CAREOS_GATEWAY_MODE` (`disabled` or `external`)
 - `CAREOS_GATEWAY_PORT` (default `8220`)
 - `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional external OpenClaw endpoint)
+- `CAREOS_GATEWAY_OPENCLAW_FALLBACK_PATH` (optional OpenClaw fallback path override)
 - `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
 - `CAREOS_GATEWAY_CONVERSATION_MODE` (`openclaw_first` recommended, fallback `deterministic_first`)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH` (`true` to enable proactive push)
