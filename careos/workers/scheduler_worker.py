@@ -96,6 +96,11 @@ def run_once(now: datetime | None = None) -> int:
                 flexibility=item.flexibility,
                 persona=persona,
             )
+            event_policy = context.policy_engine.event_policy_flags(
+                criticality=item.criticality,
+                flexibility=item.flexibility,
+            )
+            normalized_policy = context.policy_engine.normalize_event_policy_flags(event_policy.as_payload())
             if 0 in decision.reminder_offsets_minutes:
                 recipients = _recipient_endpoints(patient_id)
                 if not recipients:
@@ -116,7 +121,12 @@ def run_once(now: datetime | None = None) -> int:
                         body=message_body,
                         correlation_id=f"sched:{patient_id}:{item.win_instance_id}:{participant_id}",
                         idempotency_key=idempotency_key,
-                        payload={"tone": decision.tone, "to": phone_number, "push_enabled": sender is not None},
+                        payload={
+                            "tone": decision.tone,
+                            "to": phone_number,
+                            "push_enabled": sender is not None,
+                            "event_policy": normalized_policy.as_payload(),
+                        },
                     )
                     if not inserted:
                         continue

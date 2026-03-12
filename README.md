@@ -149,6 +149,7 @@ WhatsApp command additions for multi-patient caregiver flow:
 Plain-English fallback mode:
 - Keep deterministic commands as primary path.
 - Set `CAREOS_CONVERSATION_ENGINE=openclaw` to enable fallback only when deterministic routing returns unknown command.
+- `CAREOS_GATEWAY_MODE=disabled|external` controls whether Twilio is terminated directly by CareOS or by an external gateway service.
 - FastAPI calls fallback endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`.
 - `careos-lite` now exposes a local bridge endpoint at `/v1/careos/fallback` that maps common plain-English requests to deterministic commands.
 - Recommended VM setting for local bridge: `CAREOS_OPENCLAW_BASE_URL=http://127.0.0.1:8115`.

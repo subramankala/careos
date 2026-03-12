@@ -203,6 +203,41 @@ class Store(ABC):
     ) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def create_personalization_rule(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        rule_type: str,
+        rule_payload: dict,
+        expires_at: datetime,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_active_personalization_rules(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def log_mediation_decision(
+        self,
+        *,
+        event_id: str,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str | None,
+        action: str,
+        reason: str,
+        policy_snapshot: dict,
+        personalization_snapshot: dict,
+        rendered_text: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> bool:
+        raise NotImplementedError
+
 
 class InMemoryStore(Store):
     def __init__(self) -> None:
@@ -224,6 +259,8 @@ class InMemoryStore(Store):
         self.active_patient_context: dict[str, dict] = {}
         self.onboarding_sessions: dict[str, dict] = {}
         self.caregiver_verification_requests: dict[str, dict] = {}
+        self.personalization_rules: dict[str, dict] = {}
+        self.mediation_decision_idempotency: set[str] = set()
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -817,6 +854,64 @@ class InMemoryStore(Store):
         if idempotency_key in self.message_idempotency:
             return False
         self.message_idempotency.add(idempotency_key)
+        return True
+
+    def create_personalization_rule(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        rule_type: str,
+        rule_payload: dict,
+        expires_at: datetime,
+    ) -> dict:
+        rule_id = str(uuid4())
+        row = {
+            "id": rule_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "actor_participant_id": str(actor_participant_id),
+            "rule_type": str(rule_type),
+            "rule_payload": dict(rule_payload or {}),
+            "expires_at": _ensure_utc(expires_at),
+            "created_at": datetime.now(UTC),
+        }
+        self.personalization_rules[rule_id] = row
+        return row
+
+    def list_active_personalization_rules(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        now_utc = _ensure_utc(now)
+        rows: list[dict] = []
+        for rule in self.personalization_rules.values():
+            if str(rule["tenant_id"]) != str(tenant_id):
+                continue
+            if str(rule["patient_id"]) != str(patient_id):
+                continue
+            if _ensure_dt(rule["expires_at"]) <= now_utc:
+                continue
+            rows.append(dict(rule))
+        rows.sort(key=lambda item: str(item["created_at"]))
+        return rows
+
+    def log_mediation_decision(
+        self,
+        *,
+        event_id: str,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str | None,
+        action: str,
+        reason: str,
+        policy_snapshot: dict,
+        personalization_snapshot: dict,
+        rendered_text: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> bool:
+        if idempotency_key in self.mediation_decision_idempotency:
+            return False
+        self.mediation_decision_idempotency.add(idempotency_key)
         return True
 
 
@@ -1647,6 +1742,90 @@ class PostgresStore(Store):
                     message_type,
                     body,
                     json.dumps(payload),
+                    correlation_id,
+                    idempotency_key,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def create_personalization_rule(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        rule_type: str,
+        rule_payload: dict,
+        expires_at: datetime,
+    ) -> dict:
+        sql = """
+        INSERT INTO personalization_rules
+        (tenant_id, patient_id, actor_participant_id, rule_type, rule_payload, expires_at)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+        RETURNING id, tenant_id, patient_id, actor_participant_id, rule_type, rule_payload, expires_at, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    actor_participant_id,
+                    rule_type,
+                    json.dumps(rule_payload or {}),
+                    _ensure_utc(expires_at),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def list_active_personalization_rules(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, actor_participant_id, rule_type, rule_payload, expires_at, created_at
+        FROM personalization_rules
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND expires_at > %s
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id, _ensure_utc(now)))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def log_mediation_decision(
+        self,
+        *,
+        event_id: str,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str | None,
+        action: str,
+        reason: str,
+        policy_snapshot: dict,
+        personalization_snapshot: dict,
+        rendered_text: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> bool:
+        sql = """
+        INSERT INTO mediation_decisions
+        (event_id, tenant_id, patient_id, participant_id, action, reason, policy_snapshot,
+         personalization_snapshot, rendered_text, correlation_id, idempotency_key)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    event_id,
+                    tenant_id,
+                    patient_id,
+                    participant_id,
+                    action,
+                    reason,
+                    json.dumps(policy_snapshot or {}),
+                    json.dumps(personalization_snapshot or {}),
+                    rendered_text,
                     correlation_id,
                     idempotency_key,
                 ),

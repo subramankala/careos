@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from careos.domain.enums.core import Criticality, Flexibility, PersonaType, RecurrenceType, Role, WinState
@@ -184,6 +184,25 @@ class CaregiverVerificationRequest(BaseModel):
 class CommandResult(BaseModel):
     text: str
     action: str
+
+
+class CareOSEventPolicy(BaseModel):
+    criticality_class: Literal["A", "B", "C"]
+    suppression_allowed: bool
+    delay_allowed: bool
+    transformation_allowed: bool
+    reroute_allowed: bool
+
+
+class OutboundCareEvent(BaseModel):
+    event_id: str
+    tenant_id: str
+    patient_id: str
+    event_type: str
+    criticality: Criticality
+    due_at: datetime
+    suppression_policy: CareOSEventPolicy
+    message_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class CarePlanDeltaMeta(BaseModel):
