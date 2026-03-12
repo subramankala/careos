@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Any
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from careos.settings import settings
@@ -30,7 +31,8 @@ class CareOSAdapter:
 
     def resolve_context(self, phone_number: str) -> dict[str, Any] | None:
         try:
-            return self._request(f"/internal/resolve-context?phone_number={phone_number}")
+            encoded = quote(str(phone_number), safe="")
+            return self._request(f"/internal/resolve-context?phone_number={encoded}")
         except Exception:
             return None
 
