@@ -64,6 +64,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_mediation.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -73,8 +74,8 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_
 4. Reload and start services:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp
-sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp
+sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
+sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
 ```
 5. Verify:
 ```bash
@@ -95,6 +96,10 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_ONBOARDING_SESSION_TTL_HOURS` (default `24`; WhatsApp onboarding session resume window)
 - `CAREOS_ONBOARDING_VERIFICATION_TTL_HOURS` (default `48`; caregiver verification request expiry)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
+- `CAREOS_GATEWAY_MODE=disabled|external` (default `disabled`)
+- `CAREOS_GATEWAY_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
+- `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional upstream OpenClaw base URL)
+- `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
 - `CAREOS_MCP_API_KEY` (required when exposing MCP)
 - `CAREOS_MCP_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
@@ -112,6 +117,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_mediation.sql
 ```
 
 ## Core endpoints
@@ -165,6 +171,10 @@ Gateway endpoints (new scaffold):
 - `GET /health` (gateway service port)
 - `POST /gateway/twilio/webhook`
 - `POST /gateway/careos/events` (policy-bounded outbound mediation)
+
+Twilio cutover:
+- direct mode: `/twilio/webhook`
+- gateway mode: `/gateway/twilio/webhook`
 
 WhatsApp onboarding (unknown/incomplete sender):
 - entry asks: `myself` or `someone I care for`

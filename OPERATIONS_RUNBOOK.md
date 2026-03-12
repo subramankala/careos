@@ -61,6 +61,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_mediation.sql
 ```
 
 WhatsApp onboarding session TTL is controlled by:
@@ -385,5 +386,128 @@ FROM message_events
 WHERE direction='outbound'
 ORDER BY created_at DESC
 LIMIT 30;
+"
+```
+
+## Gateway Service + Twilio Cutover
+
+Install/refresh all unit files (now includes gateway):
+
+```bash
+cd ~/careos
+./scripts/install_systemd_units.sh --apply
+sudo systemctl daemon-reload
+sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
+sudo systemctl restart careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
+```
+
+Gateway checks:
+
+```bash
+curl -s http://127.0.0.1:8220/health
+sudo systemctl status careos-lite-gateway --no-pager
+sudo journalctl -u careos-lite-gateway -n 100 --no-pager
+```
+
+Cutover Twilio inbound webhook:
+- from: `/twilio/webhook`
+- to: `/gateway/twilio/webhook`
+
+Rollback:
+- switch Twilio URL back to `/twilio/webhook`
+- set `CAREOS_GATEWAY_MODE=disabled`
+- restart API/gateway
+
+```bash
+sudo systemctl restart careos-lite-api careos-lite-gateway
+```
+
+## End-to-End Gateway Scenarios
+
+Preconditions:
+- `CAREOS_GATEWAY_MODE=external`
+- gateway and API are healthy
+- test patient has at least one class-A event (critical/non-suppressible) and one class-C event (suppressible)
+
+### Scenario A: NL instruction sets critical-only for today
+
+1) Patient sends:
+- `I did not sleep well today, only send critical reminders`
+
+2) Expected:
+- acknowledgement from gateway
+- personalization rule stored with same-day TTL
+
+Inspect:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -c "
+SELECT rule_type, rule_scope, active, expires_at, created_at
+FROM personalization_rules
+ORDER BY created_at DESC
+LIMIT 5;
+"
+```
+
+### Scenario B: Class C suppression
+
+Trigger a flexible/lifestyle event through gateway event API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8220/gateway/careos/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_id":"evt-class-c-1",
+    "tenant_id":"<tenant_id>",
+    "patient_id":"<patient_id>",
+    "participant_id":"<participant_id>",
+    "channel":"whatsapp",
+    "classification":"class_c_lifestyle",
+    "suppression_allowed": true,
+    "body":"Walk reminder: 15 minutes",
+    "to":"whatsapp:+<phone>"
+  }'
+```
+
+Expected:
+- response indicates suppression when critical-only rule is active
+- decision event logged as `suppressed`
+
+### Scenario C: Class A pass-through
+
+Trigger a critical event:
+
+```bash
+curl -s -X POST http://127.0.0.1:8220/gateway/careos/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_id":"evt-class-a-1",
+    "tenant_id":"<tenant_id>",
+    "patient_id":"<patient_id>",
+    "participant_id":"<participant_id>",
+    "channel":"whatsapp",
+    "classification":"class_a_non_negotiable",
+    "suppression_allowed": false,
+    "body":"Medication due now: Ecosprin 75mg",
+    "to":"whatsapp:+<phone>"
+  }'
+```
+
+Expected:
+- decision is `sent` (never suppressed)
+- message event recorded outbound
+
+### Scenario D: Idempotency
+
+Replay same `event_id` payload twice; second should not produce duplicate outbound send.
+
+Inspect outbound dedupe behavior:
+
+```bash
+psql "$CAREOS_DATABASE_URL" -c "
+SELECT event_id, action, created_at
+FROM mediation_decisions
+ORDER BY created_at DESC
+LIMIT 20;
 "
 ```

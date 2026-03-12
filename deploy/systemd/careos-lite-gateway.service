@@ -1,0 +1,16 @@
+[Unit]
+Description=CareOS Lite Gateway (Twilio Mediation)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/careos-lite
+EnvironmentFile=/opt/careos-lite/.env
+ExecStart=/opt/careos-lite/.venv/bin/uvicorn careos.gateway.main:app --host 0.0.0.0 --port 8220
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

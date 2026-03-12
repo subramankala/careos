@@ -14,8 +14,9 @@ fi
 API_UNIT="careos-lite-api.service"
 SCHED_UNIT="careos-lite-scheduler.service"
 MCP_UNIT="careos-lite-mcp.service"
+GATEWAY_UNIT="careos-lite-gateway.service"
 
-for unit in "$API_UNIT" "$SCHED_UNIT" "$MCP_UNIT"; do
+for unit in "$API_UNIT" "$SCHED_UNIT" "$MCP_UNIT" "$GATEWAY_UNIT"; do
   if [[ ! -f "$UNIT_SRC_DIR/$unit" ]]; then
     echo "Missing unit file: $UNIT_SRC_DIR/$unit" >&2
     exit 1
@@ -31,10 +32,12 @@ if [[ "$APPLY" == "true" ]]; then
   sudo cp "$UNIT_SRC_DIR/$API_UNIT" "$UNIT_DEST_DIR/$API_UNIT"
   sudo cp "$UNIT_SRC_DIR/$SCHED_UNIT" "$UNIT_DEST_DIR/$SCHED_UNIT"
   sudo cp "$UNIT_SRC_DIR/$MCP_UNIT" "$UNIT_DEST_DIR/$MCP_UNIT"
+  sudo cp "$UNIT_SRC_DIR/$GATEWAY_UNIT" "$UNIT_DEST_DIR/$GATEWAY_UNIT"
   echo "Copied:"
   echo "- $UNIT_DEST_DIR/$API_UNIT"
   echo "- $UNIT_DEST_DIR/$SCHED_UNIT"
   echo "- $UNIT_DEST_DIR/$MCP_UNIT"
+  echo "- $UNIT_DEST_DIR/$GATEWAY_UNIT"
 else
   echo "Dry run (no files copied)."
   echo "To apply, run:"
@@ -44,11 +47,13 @@ fi
 echo
 echo "Next commands to run manually:"
 echo "  sudo systemctl daemon-reload"
-echo "  sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp"
-echo "  sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp"
+echo "  sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway"
+echo "  sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway"
 echo "  sudo systemctl status careos-lite-api --no-pager"
 echo "  sudo systemctl status careos-lite-scheduler --no-pager"
 echo "  sudo systemctl status careos-lite-mcp --no-pager"
+echo "  sudo systemctl status careos-lite-gateway --no-pager"
 echo "  sudo journalctl -u careos-lite-api -n 100 --no-pager"
 echo "  sudo journalctl -u careos-lite-scheduler -n 100 --no-pager"
 echo "  sudo journalctl -u careos-lite-mcp -n 100 --no-pager"
+echo "  sudo journalctl -u careos-lite-gateway -n 100 --no-pager"

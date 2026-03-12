@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     gateway_intent_min_confidence: float = 0.72
     gateway_host: str = "0.0.0.0"
     gateway_port: int = 8220
+    gateway_openclaw_base_url: str = ""
+    gateway_pending_action_ttl_minutes: int = 10
 
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False

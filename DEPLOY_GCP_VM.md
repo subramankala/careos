@@ -36,6 +36,9 @@ Required vars to review before start:
 - `CAREOS_VALIDATE_TWILIO_SIGNATURE` (keep `true` in production)
 - `CAREOS_CONVERSATION_ENGINE` (`deterministic` or `openclaw`)
 - `CAREOS_GATEWAY_MODE` (`disabled` or `external`)
+- `CAREOS_GATEWAY_PORT` (default `8220`)
+- `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional external OpenClaw endpoint)
+- `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH` (`true` to enable proactive push)
 
 Optional but recommended:
@@ -53,6 +56,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0003_recurrence_support.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0004_participant_active_context.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0005_onboarding_sessions.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0006_caregiver_verification_requests.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_mediation.sql
 ```
 
 ## 4. Review and install systemd unit files
@@ -74,33 +78,78 @@ Unit sources in repo:
 - `deploy/systemd/careos-lite-api.service`
 - `deploy/systemd/careos-lite-scheduler.service`
 - `deploy/systemd/careos-lite-mcp.service`
+- `deploy/systemd/careos-lite-gateway.service`
 
 ## 5. Reload and start services
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp
-sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp
+sudo systemctl enable careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
+sudo systemctl start careos-lite-api careos-lite-scheduler careos-lite-mcp careos-lite-gateway
 sudo systemctl status careos-lite-api --no-pager
 sudo systemctl status careos-lite-scheduler --no-pager
 sudo systemctl status careos-lite-mcp --no-pager
+sudo systemctl status careos-lite-gateway --no-pager
 ```
 
-## 6. Twilio webhook config
+## 6. Twilio webhook cutover
 
-Set incoming WhatsApp webhook URL to:
+If gateway mode is enabled (`CAREOS_GATEWAY_MODE=external`), point Twilio to gateway ingress:
+
+`https://<your-domain>/gateway/twilio/webhook`
+
+If gateway mode is disabled (`CAREOS_GATEWAY_MODE=disabled`), point Twilio directly to CareOS:
 
 `https://<your-domain>/twilio/webhook`
 
 Method: `POST`
 
+### Cutover checklist
+
+1. Verify gateway health:
+
+```bash
+curl -s http://127.0.0.1:8220/health
+```
+
+2. Verify API health:
+
+```bash
+curl -s http://127.0.0.1:8115/health
+```
+
+3. Send a local smoke webhook to gateway:
+
+```bash
+curl -s -X POST http://127.0.0.1:8220/gateway/twilio/webhook \
+  -d "From=whatsapp:+15550001111" \
+  -d "To=whatsapp:+14155238886" \
+  -d "Body=schedule" \
+  -d "MessageSid=SM_gateway_smoke_1"
+```
+
+4. Update Twilio inbound URL to `/gateway/twilio/webhook`.
+5. Observe logs for first live messages.
+
+### Rollback checklist
+
+1. Update Twilio inbound URL back to `/twilio/webhook`.
+2. Set `CAREOS_GATEWAY_MODE=disabled` in `.env`.
+3. Restart API and gateway:
+
+```bash
+sudo systemctl restart careos-lite-api careos-lite-gateway
+```
+
 ## 7. Validate and inspect logs
 
 ```bash
 curl -s http://127.0.0.1:8115/health
+curl -s http://127.0.0.1:8220/health
 sudo journalctl -u careos-lite-api -n 100 --no-pager
 sudo journalctl -u careos-lite-scheduler -n 100 --no-pager
 sudo journalctl -u careos-lite-mcp -n 100 --no-pager
+sudo journalctl -u careos-lite-gateway -n 100 --no-pager
 ```
 
 ## 8. MCP for OpenClaw/agents
