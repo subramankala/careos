@@ -14,6 +14,19 @@ router = APIRouter()
 adapter = CareOSAdapter()
 
 
+def _normalize_sender_phone(sender: str) -> str:
+    value = str(sender).strip()
+    if not value:
+        return value
+    if value.startswith("whatsapp: "):
+        value = "whatsapp:+" + value[len("whatsapp: ") :]
+    elif value.startswith("whatsapp:") and "+" not in value:
+        suffix = value[len("whatsapp:") :].strip()
+        if suffix and suffix[0].isdigit():
+            value = f"whatsapp:+{suffix}"
+    return value.replace(" ", "")
+
+
 def _render_schedule(payload: dict, *, prefix: str = "Schedule") -> str:
     timeline = payload.get("timeline", [])
     if not timeline:
@@ -102,7 +115,7 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     decoded = body_bytes.decode("utf-8", errors="ignore")
     parsed = parse_qs(decoded, keep_blank_values=True)
     payload = {k: v[0] if v else "" for k, v in parsed.items()}
-    sender = str(payload.get("From", "")).strip()
+    sender = _normalize_sender_phone(payload.get("From", ""))
     text = str(payload.get("Body", "")).strip()
     if not sender:
         return Response(content=message_response("Missing sender."), media_type="text/xml")
