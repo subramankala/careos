@@ -47,6 +47,16 @@ def _execute_intent(intent: IntentParseResult, context: dict) -> str:
             f"missed={status.get('missed_count',0)}, skipped={status.get('skipped_count',0)}, "
             f"score={status.get('adherence_score',0)}%"
         )
+    if intent.intent == "critical_missed_today":
+        today = adapter.get_today(patient_id)
+        critical_missed = [
+            row["title"]
+            for row in today.get("timeline", [])
+            if str(row.get("criticality", "")).lower() == "high" and str(row.get("current_state", "")) == "missed"
+        ]
+        if not critical_missed:
+            return "No critical wins are missed today."
+        return "Missed critical wins today:\n" + "\n".join([f"- {title}" for title in critical_missed])
     if intent.intent == "med_count_today":
         today = adapter.get_today(patient_id)
         meds = [row for row in today.get("timeline", []) if str(row.get("category", "")).lower() == "medication"]

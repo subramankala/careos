@@ -164,6 +164,7 @@ Plain-English fallback mode:
 Gateway endpoints (new scaffold):
 - `GET /health` (gateway service port)
 - `POST /gateway/twilio/webhook`
+- `POST /gateway/careos/events` (policy-bounded outbound mediation)
 
 WhatsApp onboarding (unknown/incomplete sender):
 - entry asks: `myself` or `someone I care for`

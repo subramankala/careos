@@ -66,3 +66,18 @@ def test_rule_parse_delay_item_when_llm_unset() -> None:
         assert parsed.args["minutes"] == 30
     finally:
         settings.openai_api_key = previous_key
+
+
+def test_rule_parse_critical_missed_when_llm_unset() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "did I miss any critical meds today?",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "critical_missed_today"
+    finally:
+        settings.openai_api_key = previous_key

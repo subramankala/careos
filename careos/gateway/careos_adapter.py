@@ -86,3 +86,42 @@ class CareOSAdapter:
                 "expires_at": expires_at_iso,
             },
         )
+
+    def list_active_personalization_rules(self, *, tenant_id: str, patient_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/internal/personalization/rules/active?tenant_id={tenant_id}&patient_id={patient_id}",
+            method="GET",
+        )
+
+    def log_mediation_decision(
+        self,
+        *,
+        event_id: str,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str | None,
+        action: str,
+        reason: str,
+        policy_snapshot: dict,
+        personalization_snapshot: dict,
+        rendered_text: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "/internal/mediation/decisions",
+            method="POST",
+            payload={
+                "event_id": event_id,
+                "tenant_id": tenant_id,
+                "patient_id": patient_id,
+                "participant_id": participant_id,
+                "action": action,
+                "reason": reason,
+                "policy_snapshot": policy_snapshot,
+                "personalization_snapshot": personalization_snapshot,
+                "rendered_text": rendered_text,
+                "correlation_id": correlation_id,
+                "idempotency_key": idempotency_key,
+            },
+        )
