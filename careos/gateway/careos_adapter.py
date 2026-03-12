@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import json
+from datetime import date
+from typing import Any
+from urllib.request import Request, urlopen
+
+from careos.settings import settings
+
+
+class CareOSAdapter:
+    def __init__(self, base_url: str | None = None) -> None:
+        self.base_url = (base_url or getattr(settings, "gateway_careos_base_url", "") or "http://127.0.0.1:8115").rstrip("/")
+
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = None
+        headers: dict[str, str] = {}
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = Request(f"{self.base_url}{path}", data=body, method=method, headers=headers)
+        with urlopen(req, timeout=20) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8"))
+
+    def resolve_context(self, phone_number: str) -> dict[str, Any] | None:
+        try:
+            return self._request(f"/internal/resolve-context?phone_number={phone_number}")
+        except Exception:
+            return None
+
+    def get_today(self, patient_id: str) -> dict[str, Any]:
+        return self._request(f"/patients/{patient_id}/today")
+
+    def get_day(self, patient_id: str, day_value: date) -> dict[str, Any]:
+        return self._request(f"/patients/{patient_id}/day?day={day_value.isoformat()}")
+
+    def get_status(self, patient_id: str) -> dict[str, Any]:
+        return self._request(f"/patients/{patient_id}/status")
+
+    def complete_win(self, instance_id: str, actor_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/wins/{instance_id}/complete",
+            method="POST",
+            payload={"actor_participant_id": actor_id, "reason": "gateway_intent", "minutes": 0},
+        )
+
+    def skip_win(self, instance_id: str, actor_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/wins/{instance_id}/skip",
+            method="POST",
+            payload={"actor_participant_id": actor_id, "reason": "gateway_intent", "minutes": 0},
+        )
+
+    def delay_win(self, instance_id: str, actor_id: str, minutes: int) -> dict[str, Any]:
+        return self._request(
+            f"/wins/{instance_id}/delay",
+            method="POST",
+            payload={"actor_participant_id": actor_id, "reason": "gateway_intent", "minutes": int(minutes)},
+        )
+
+    def create_personalization_rule(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        rule_type: str,
+        rule_payload: dict[str, Any],
+        expires_at_iso: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "/internal/personalization/rules",
+            method="POST",
+            payload={
+                "tenant_id": tenant_id,
+                "patient_id": patient_id,
+                "actor_participant_id": actor_participant_id,
+                "rule_type": rule_type,
+                "rule_payload": rule_payload,
+                "expires_at": expires_at_iso,
+            },
+        )

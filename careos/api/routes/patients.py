@@ -1,6 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from careos.app_context import context
 from careos.domain.models.api import AdherenceSummaryResponse, ParticipantCreate, PatientCreate, TenantCreate
@@ -43,6 +43,11 @@ def patient_today(patient_id: str) -> dict:
 @router.get("/patients/{patient_id}/timeline")
 def patient_timeline(patient_id: str) -> list[dict]:
     return [item.model_dump() for item in context.win_service.today(patient_id).timeline]
+
+
+@router.get("/patients/{patient_id}/day")
+def patient_day(patient_id: str, day: date = Query(...)) -> dict:
+    return context.win_service.day(patient_id, day).model_dump()
 
 
 @router.get("/patients/{patient_id}/status")

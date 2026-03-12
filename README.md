@@ -12,6 +12,7 @@ Production-oriented, multi-tenant CareOS backend for WhatsApp + voice orchestrat
 - Idempotent outbound message event logging
 - Scheduler worker loop for due reminders + escalation checks
 - MCP server for authenticated agent tool-calling (`Agent/OpenClaw -> MCP -> FastAPI`)
+- Gateway app scaffold for external Twilio mediation (`Twilio -> Gateway -> CareOS`)
 - Tests for patient isolation across shared business number traffic
 
 ## Quick start
@@ -159,6 +160,10 @@ Plain-English fallback mode:
   - `CAREOS_OPENAI_MODEL` (default `gpt-4o-mini`)
   - `CAREOS_OPENAI_TIMEOUT_SECONDS`
 - If OpenClaw is unavailable/error, FastAPI returns the normal deterministic fallback text.
+
+Gateway endpoints (new scaffold):
+- `GET /health` (gateway service port)
+- `POST /gateway/twilio/webhook`
 
 WhatsApp onboarding (unknown/incomplete sender):
 - entry asks: `myself` or `someone I care for`

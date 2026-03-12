@@ -1,0 +1,9 @@
+from fastapi import APIRouter
+
+router = APIRouter()
+
+
+@router.get("/health")
+def health() -> dict[str, str]:
+    return {"service": "careos-lite-gateway", "status": "ok"}
+

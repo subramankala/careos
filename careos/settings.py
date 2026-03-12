@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 15
     gateway_mode: str = "disabled"
+    gateway_careos_base_url: str = "http://127.0.0.1:8115"
+    gateway_intent_min_confidence: float = 0.72
+    gateway_host: str = "0.0.0.0"
+    gateway_port: int = 8220
 
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False

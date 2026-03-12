@@ -18,5 +18,6 @@ def reset_in_memory_store() -> None:
     context.care_plan_edits.store = store
     context.messaging.store = store
     context.onboarding.store = store
+    context.personalization.store = store
     yield
     settings.use_in_memory = previous_use_in_memory

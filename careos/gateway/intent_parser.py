@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+from careos.settings import settings
+
+ALLOWED_INTENTS = {
+    "schedule_today",
+    "schedule_tomorrow",
+    "status",
+    "med_count_today",
+    "set_critical_only_today",
+    "done",
+    "skip",
+    "delay",
+    "clarify",
+}
+
+
+@dataclass
+class IntentParseResult:
+    intent: str
+    args: dict = field(default_factory=dict)
+    confidence: float = 0.0
+    rationale: str = ""
+
+
+def _rule_parse(text: str) -> IntentParseResult:
+    lower = text.strip().lower()
+    if not lower:
+        return IntentParseResult(intent="clarify", confidence=0.1, rationale="empty_text")
+    if "tomorrow" in lower:
+        return IntentParseResult(intent="schedule_tomorrow", confidence=0.85, rationale="contains_tomorrow")
+    if "schedule" in lower or "pending" in lower or "left today" in lower:
+        return IntentParseResult(intent="schedule_today", confidence=0.82, rationale="schedule_keyword")
+    if "status" in lower or "adherence" in lower:
+        return IntentParseResult(intent="status", confidence=0.82, rationale="status_keyword")
+    if ("how many" in lower or "count" in lower or "total" in lower) and (
+        "med" in lower or "medication" in lower
+    ):
+        return IntentParseResult(intent="med_count_today", confidence=0.84, rationale="med_count_phrase")
+    if "only critical" in lower and "today" in lower:
+        return IntentParseResult(intent="set_critical_only_today", confidence=0.86, rationale="critical_only_today_phrase")
+    done_match = re.search(r"\b(?:done|mark)\s+(\d+)\b", lower)
+    if done_match:
+        return IntentParseResult(intent="done", args={"item_no": int(done_match.group(1))}, confidence=0.88, rationale="done_item_no")
+    skip_match = re.search(r"\bskip\s+(\d+)\b", lower)
+    if skip_match:
+        return IntentParseResult(intent="skip", args={"item_no": int(skip_match.group(1))}, confidence=0.88, rationale="skip_item_no")
+    delay_match = re.search(r"\b(?:delay|snooze)\s+(\d+)\s+(\d+)\b", lower)
+    if delay_match:
+        return IntentParseResult(
+            intent="delay",
+            args={"item_no": int(delay_match.group(1)), "minutes": int(delay_match.group(2))},
+            confidence=0.88,
+            rationale="delay_item_minutes",
+        )
+    return IntentParseResult(intent="clarify", confidence=0.3, rationale="rule_no_match")
+
+
+def _llm_parse(text: str, context: dict, today: dict, status: dict) -> IntentParseResult | None:
+    if not settings.openai_api_key:
+        return None
+    payload = {
+        "text": text,
+        "context": context,
+        "today": today,
+        "status": status,
+        "allowed_intents": sorted(ALLOWED_INTENTS),
+        "now_utc": datetime.now(UTC).isoformat(),
+    }
+    system = (
+        "You are an intent parser. Return JSON only with fields: intent, args, confidence, rationale. "
+        "intent must be one of allowed_intents. confidence must be 0..1."
+    )
+    req_payload = {
+        "model": settings.openai_model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload)},
+        ],
+    }
+    req = Request(
+        "https://api.openai.com/v1/chat/completions",
+        method="POST",
+        data=json.dumps(req_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {settings.openai_api_key}"},
+    )
+    try:
+        with urlopen(req, timeout=max(getattr(settings, "openai_timeout_seconds", 15), 1)) as resp:  # noqa: S310
+            body = json.loads(resp.read().decode("utf-8"))
+    except (URLError, OSError, ValueError, TimeoutError):
+        return None
+    try:
+        raw = body["choices"][0]["message"]["content"]
+        parsed = json.loads(raw)
+        intent = str(parsed.get("intent", "")).strip()
+        if intent not in ALLOWED_INTENTS:
+            return None
+        confidence = float(parsed.get("confidence", 0.0) or 0.0)
+        args = parsed.get("args") or {}
+        rationale = str(parsed.get("rationale", "")).strip()
+        return IntentParseResult(intent=intent, args=dict(args), confidence=confidence, rationale=rationale)
+    except Exception:
+        return None
+
+
+def parse_intent(text: str, *, context: dict, today: dict, status: dict) -> IntentParseResult:
+    llm = _llm_parse(text, context, today, status)
+    threshold = float(getattr(settings, "gateway_intent_min_confidence", 0.72))
+    if llm is not None:
+        if llm.confidence >= threshold:
+            return llm
+        return IntentParseResult(intent="clarify", confidence=llm.confidence, rationale=f"low_confidence:{llm.rationale}")
+    return _rule_parse(text)

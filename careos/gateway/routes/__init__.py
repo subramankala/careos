@@ -1,0 +1,2 @@
+"""Gateway route package."""
+

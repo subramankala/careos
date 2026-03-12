@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from careos.db.repositories.store import Store
@@ -25,6 +25,13 @@ class WinService:
             timezone=timezone_name,
             timeline=timeline,
         )
+
+    def day(self, patient_id: str, day_value: date) -> PatientTodayResponse:
+        profile = self.store.get_patient_profile(patient_id) or {"timezone": "UTC"}
+        timezone_name = str(profile.get("timezone", "UTC"))
+        timezone = ZoneInfo(timezone_name)
+        at = datetime.combine(day_value, time(12, 0), tzinfo=timezone).astimezone(UTC)
+        return self.today(patient_id, at=at)
 
     def next_text(self, patient_id: str, at: datetime | None = None) -> str:
         now = at or datetime.now(UTC)
