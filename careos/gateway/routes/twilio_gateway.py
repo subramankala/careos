@@ -24,6 +24,12 @@ openclaw_delegate = OpenClawConversationEngine(
         or settings.openclaw_fallback_path
         or "/v1/careos/fallback"
     ),
+    responses_path=(
+        settings.gateway_openclaw_responses_path
+        or settings.openclaw_responses_path
+        or "/v1/responses"
+    ),
+    gateway_token=(settings.gateway_openclaw_token or settings.openclaw_gateway_token or "").strip(),
 )
 
 

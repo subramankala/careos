@@ -100,6 +100,8 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_GATEWAY_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
 - `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional upstream OpenClaw base URL)
 - `CAREOS_GATEWAY_OPENCLAW_FALLBACK_PATH` (optional OpenClaw fallback path override)
+- `CAREOS_GATEWAY_OPENCLAW_RESPONSES_PATH` (optional OpenClaw Responses API path, default `/v1/responses`)
+- `CAREOS_GATEWAY_OPENCLAW_TOKEN` (Bearer token for OpenClaw gateway HTTP auth)
 - `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
 - `CAREOS_GATEWAY_CONVERSATION_MODE` (`openclaw_first` or `deterministic_first`)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
@@ -164,6 +166,7 @@ Plain-English fallback mode:
   - `deterministic_first` uses deterministic gateway parser only.
 - FastAPI calls fallback endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`.
 - `CAREOS_OPENCLAW_FALLBACK_PATH` overrides the default fallback path when needed.
+- If fallback endpoints are unavailable, CareOS can call OpenClaw Responses HTTP (`/v1/responses`) using `CAREOS_OPENCLAW_GATEWAY_TOKEN` / `CAREOS_GATEWAY_OPENCLAW_TOKEN`.
 - `careos-lite` now exposes a local bridge endpoint at `/v1/careos/fallback` that maps common plain-English requests to deterministic commands.
 - Recommended VM setting for local bridge: `CAREOS_OPENCLAW_BASE_URL=http://127.0.0.1:8115`.
 - External OpenClaw can still be used by pointing `CAREOS_OPENCLAW_BASE_URL` at that service URL.

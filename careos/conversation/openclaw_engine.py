@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -40,11 +41,15 @@ class OpenClawConversationEngine(ConversationEngine):
         timeout_seconds: int = 15,
         win_service: WinService | None = None,
         fallback_path: str = "/v1/careos/fallback",
+        responses_path: str = "/v1/responses",
+        gateway_token: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = max(int(timeout_seconds), 1)
         self.win_service = win_service
         self.fallback_path = fallback_path if fallback_path.startswith("/") else f"/{fallback_path}"
+        self.responses_path = responses_path if responses_path.startswith("/") else f"/{responses_path}"
+        self.gateway_token = gateway_token.strip()
 
     def _is_local_bridge_url(self) -> bool:
         if not self.base_url:
@@ -99,7 +104,96 @@ class OpenClawConversationEngine(ConversationEngine):
                     text_out = first.get("text")
                     if isinstance(text_out, str) and text_out.strip():
                         return text_out.strip(), action
+            output = data.get("output")
+            if isinstance(output, list):
+                chunks: list[str] = []
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    content = item.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") == "output_text":
+                            piece = part.get("text")
+                            if isinstance(piece, str) and piece.strip():
+                                chunks.append(piece.strip())
+                if chunks:
+                    return "\n".join(chunks), action
         return "", "openclaw_fallback"
+
+    def _call_openresponses(self, text: str, context: ParticipantContext) -> CommandResult:
+        if not self.gateway_token:
+            return CommandResult(action="unavailable", text="")
+
+        prompt = (
+            "You are a CareOS assistant. Use the provided care context, answer concisely, and do not invent facts.\n"
+            f"Now (UTC): {datetime.utcnow().isoformat()}Z\n"
+            f"Tenant: {context.tenant_id}\n"
+            f"Participant: {context.participant_id} ({context.participant_role.value})\n"
+            f"Patient: {context.patient_id}, timezone={context.patient_timezone}, persona={context.patient_persona.value}\n"
+            f"User message: {text}"
+        )
+        payload = {
+            "model": "openclaw:main",
+            "stream": False,
+            "user": context.participant_id,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+        }
+        req = Request(
+            f"{self.base_url}{self.responses_path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.gateway_token}",
+            },
+        )
+        try:
+            with urlopen(req, timeout=self.timeout_seconds) as resp:  # noqa: S310
+                data = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            logger.warning(
+                "nl_fallback_unavailable",
+                reason=f"openresponses_http_{exc.code}",
+                base_url=self.base_url,
+                path=self.responses_path,
+                patient_id=context.patient_id,
+                participant_id=context.participant_id,
+            )
+            return CommandResult(action="unavailable", text="")
+        except (URLError, OSError, ValueError):
+            logger.exception(
+                "nl_fallback_unavailable",
+                reason="openresponses_transport_or_parse_error",
+                base_url=self.base_url,
+                path=self.responses_path,
+                patient_id=context.patient_id,
+                participant_id=context.participant_id,
+            )
+            return CommandResult(action="unavailable", text="")
+
+        text_reply, action = self._extract_text(data)
+        if not text_reply:
+            return CommandResult(action="unavailable", text="")
+        logger.info(
+            "nl_fallback_used",
+            source="openresponses_http",
+            base_url=self.base_url,
+            path=self.responses_path,
+            patient_id=context.patient_id,
+            participant_id=context.participant_id,
+            action=action,
+        )
+        return CommandResult(action=action, text=text_reply)
 
     def _call_remote(self, payload: dict, context: ParticipantContext) -> CommandResult:
         last_error_reason = "unknown"
@@ -150,6 +244,10 @@ class OpenClawConversationEngine(ConversationEngine):
                     action=action,
                 )
                 return CommandResult(action=action, text=text_reply)
+
+        via_openresponses = self._call_openresponses(payload.get("text", ""), context)
+        if via_openresponses.action != "unavailable" and via_openresponses.text.strip():
+            return via_openresponses
 
         logger.warning(
             "nl_fallback_unavailable",

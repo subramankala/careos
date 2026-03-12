@@ -22,3 +22,8 @@ def test_extract_text_supports_multiple_response_shapes() -> None:
 
     text, _ = OpenClawConversationEngine._extract_text({"choices": [{"message": {"content": "from choices"}}]})
     assert text == "from choices"
+
+    text, _ = OpenClawConversationEngine._extract_text(
+        {"output": [{"content": [{"type": "output_text", "text": "from output"}]}]},
+    )
+    assert text == "from output"

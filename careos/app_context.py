@@ -33,6 +33,8 @@ class AppContext:
             timeout_seconds=settings.openclaw_timeout_seconds,
             win_service=self.win_service,
             fallback_path=settings.openclaw_fallback_path,
+            responses_path=settings.openclaw_responses_path,
+            gateway_token=settings.openclaw_gateway_token,
         )
 
 

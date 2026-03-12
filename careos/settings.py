@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     conversation_engine: str = "deterministic"
     openclaw_base_url: str = ""
     openclaw_fallback_path: str = "/v1/careos/fallback"
+    openclaw_responses_path: str = "/v1/responses"
+    openclaw_gateway_token: str = ""
     openclaw_timeout_seconds: int = 15
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
@@ -37,6 +39,8 @@ class Settings(BaseSettings):
     gateway_port: int = 8220
     gateway_openclaw_base_url: str = ""
     gateway_openclaw_fallback_path: str = ""
+    gateway_openclaw_responses_path: str = ""
+    gateway_openclaw_token: str = ""
     gateway_pending_action_ttl_minutes: int = 10
     gateway_conversation_mode: str = "openclaw_first"
 
