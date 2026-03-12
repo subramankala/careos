@@ -45,10 +45,20 @@ def _rule_parse(text: str) -> IntentParseResult:
         "med" in lower or "medication" in lower
     ):
         return IntentParseResult(intent="med_count_today", confidence=0.84, rationale="med_count_phrase")
-    if "critical" in lower and ("missed" in lower or "due" in lower):
+    if "critical" in lower and (
+        "missed" in lower
+        or "miss any" in lower
+        or "did i miss" in lower
+        or "due" in lower
+    ):
         return IntentParseResult(intent="critical_missed_today", confidence=0.84, rationale="critical_missed_phrase")
-    if "only critical" in lower and "today" in lower:
+    if (
+        ("only critical" in lower or "critical reminders" in lower or "send critical" in lower)
+        and ("today" in lower or "for today" in lower)
+    ):
         return IntentParseResult(intent="set_critical_only_today", confidence=0.86, rationale="critical_only_today_phrase")
+    if "critical reminders" in lower and "only" in lower:
+        return IntentParseResult(intent="set_critical_only_today", confidence=0.84, rationale="critical_only_phrase")
     done_match = re.search(r"\b(?:done|mark)\s+(\d+)\b", lower)
     if done_match:
         return IntentParseResult(intent="done", args={"item_no": int(done_match.group(1))}, confidence=0.88, rationale="done_item_no")
