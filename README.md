@@ -100,6 +100,7 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_GATEWAY_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
 - `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional upstream OpenClaw base URL)
 - `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
+- `CAREOS_GATEWAY_CONVERSATION_MODE` (`openclaw_first` or `deterministic_first`)
 - `CAREOS_LOG_LEVEL` (default `INFO`)
 - `CAREOS_MCP_API_KEY` (required when exposing MCP)
 - `CAREOS_MCP_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
@@ -157,6 +158,9 @@ Plain-English fallback mode:
 - Keep deterministic commands as primary path.
 - Set `CAREOS_CONVERSATION_ENGINE=openclaw` to enable fallback only when deterministic routing returns unknown command.
 - `CAREOS_GATEWAY_MODE=disabled|external` controls whether Twilio is terminated directly by CareOS or by an external gateway service.
+- Gateway NL mode is controlled by `CAREOS_GATEWAY_CONVERSATION_MODE`:
+  - `openclaw_first` delegates to OpenClaw first, then falls back to deterministic on unavailable/error.
+  - `deterministic_first` uses deterministic gateway parser only.
 - FastAPI calls fallback endpoint: `POST {CAREOS_OPENCLAW_BASE_URL}/v1/careos/fallback`.
 - `careos-lite` now exposes a local bridge endpoint at `/v1/careos/fallback` that maps common plain-English requests to deterministic commands.
 - Recommended VM setting for local bridge: `CAREOS_OPENCLAW_BASE_URL=http://127.0.0.1:8115`.

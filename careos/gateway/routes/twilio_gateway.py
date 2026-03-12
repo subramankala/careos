@@ -6,12 +6,20 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request, Response
 
+from careos.conversation.openclaw_engine import OpenClawConversationEngine
+from careos.domain.enums.core import PersonaType, Role
+from careos.domain.models.api import CommandResult, ParticipantContext
 from careos.gateway.careos_adapter import CareOSAdapter
 from careos.gateway.intent_parser import IntentParseResult, parse_intent
 from careos.integrations.twilio.twiml import message_response
+from careos.settings import settings
 
 router = APIRouter()
 adapter = CareOSAdapter()
+openclaw_delegate = OpenClawConversationEngine(
+    base_url=(settings.gateway_openclaw_base_url or settings.openclaw_base_url or "").strip(),
+    timeout_seconds=settings.openclaw_timeout_seconds,
+)
 
 
 def _normalize_sender_phone(sender: str) -> str:
@@ -109,6 +117,24 @@ def _execute_intent(intent: IntentParseResult, context: dict) -> str:
     return "Please rephrase. I can help with schedule, tomorrow, status, medication counts, done, skip, and delay."
 
 
+def _to_participant_context(context_row: dict) -> ParticipantContext:
+    return ParticipantContext(
+        tenant_id=str(context_row["tenant_id"]),
+        participant_id=str(context_row["participant_id"]),
+        participant_role=Role(str(context_row["participant_role"])),
+        patient_id=str(context_row["patient_id"]),
+        patient_timezone=str(context_row["patient_timezone"]),
+        patient_persona=PersonaType(str(context_row["patient_persona"])),
+    )
+
+
+def _deterministic_reply(text: str, context_row: dict) -> str:
+    today = adapter.get_today(str(context_row["patient_id"]))
+    status = adapter.get_status(str(context_row["patient_id"]))
+    intent = parse_intent(text, context=context_row, today=today, status=status)
+    return _execute_intent(intent, context_row)
+
+
 @router.post("/gateway/twilio/webhook")
 async def twilio_gateway_webhook(request: Request) -> Response:
     body_bytes = await request.body()
@@ -127,8 +153,14 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             media_type="text/xml",
         )
 
-    today = adapter.get_today(str(context["patient_id"]))
-    status = adapter.get_status(str(context["patient_id"]))
-    intent = parse_intent(text, context=context, today=today, status=status)
-    reply = _execute_intent(intent, context)
+    mode = str(settings.gateway_conversation_mode or "openclaw_first").strip().lower()
+    reply = ""
+    if mode == "openclaw_first":
+        openclaw_result: CommandResult = openclaw_delegate.handle(text, _to_participant_context(context))
+        if openclaw_result.action != "unavailable" and openclaw_result.text.strip():
+            reply = openclaw_result.text
+        else:
+            reply = _deterministic_reply(text, context)
+    else:
+        reply = _deterministic_reply(text, context)
     return Response(content=message_response(reply), media_type="text/xml")

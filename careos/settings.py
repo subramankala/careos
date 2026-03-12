@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     gateway_port: int = 8220
     gateway_openclaw_base_url: str = ""
     gateway_pending_action_ttl_minutes: int = 10
+    gateway_conversation_mode: str = "openclaw_first"
 
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False
