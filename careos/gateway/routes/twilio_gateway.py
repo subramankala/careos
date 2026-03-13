@@ -9,13 +9,15 @@ from fastapi import APIRouter, Request, Response
 from careos.conversation.openclaw_engine import OpenClawConversationEngine
 from careos.domain.enums.core import PersonaType, Role
 from careos.domain.models.api import CommandResult, ParticipantContext
-from careos.gateway.careos_adapter import CareOSAdapter
+from careos.gateway.careos_adapter import CareOSAdapter, DashboardLinkError
 from careos.gateway.intent_parser import IntentParseResult, parse_intent
 from careos.integrations.twilio.twiml import message_response
+from careos.logging import get_logger
 from careos.settings import settings
 
 router = APIRouter()
 adapter = CareOSAdapter()
+logger = get_logger("gateway_twilio_webhook")
 openclaw_delegate = OpenClawConversationEngine(
     base_url=(settings.gateway_openclaw_base_url or settings.openclaw_base_url or "").strip(),
     timeout_seconds=settings.openclaw_timeout_seconds,
@@ -66,6 +68,33 @@ def _execute_intent(intent: IntentParseResult, context: dict) -> str:
     timezone_name = str(context["patient_timezone"])
     now_local = datetime.now(ZoneInfo(timezone_name))
 
+    if intent.intent == "caregiver_dashboard":
+        try:
+            result = adapter.generate_dashboard_view(
+                tenant_id=str(context["tenant_id"]),
+                patient_id=patient_id,
+                actor_id=participant_id,
+                role=str(context["participant_role"]),
+                view="caregiver_dashboard",
+            )
+        except DashboardLinkError as exc:
+            logger.warning(
+                "dashboard_link_unavailable",
+                reason=str(exc),
+                tenant_id=str(context["tenant_id"]),
+                patient_id=patient_id,
+                participant_id=participant_id,
+            )
+            return (
+                "I recognized a dashboard request, but the secure caregiver dashboard is temporarily unavailable. "
+                "Please try again in a few minutes."
+            )
+        url = str(result.get("url", "")).strip()
+        expires = int(result.get("expires_in_seconds", 1800) or 1800)
+        if not url:
+            return "I recognized a dashboard request, but could not generate the secure dashboard link right now."
+        expires_minutes = max(int(expires / 60), 1)
+        return f"Open caregiver dashboard: {url} (expires in {expires_minutes} minutes)"
     if intent.intent == "schedule_today":
         today = adapter.get_today(patient_id)
         return _render_schedule(today, prefix="Schedule")
@@ -164,6 +193,13 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             media_type="text/xml",
         )
 
+    today = adapter.get_today(str(context["patient_id"]))
+    status = adapter.get_status(str(context["patient_id"]))
+    parsed_intent = parse_intent(text, context=context, today=today, status=status)
+    if parsed_intent.intent == "caregiver_dashboard":
+        reply = _execute_intent(parsed_intent, context)
+        return Response(content=message_response(reply), media_type="text/xml")
+
     mode = str(settings.gateway_conversation_mode or "openclaw_first").strip().lower()
     reply = ""
     if mode == "openclaw_first":
@@ -171,7 +207,7 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         if openclaw_result.action != "unavailable" and openclaw_result.text.strip():
             reply = openclaw_result.text
         else:
-            reply = _deterministic_reply(text, context)
+            reply = _execute_intent(parsed_intent, context)
     else:
-        reply = _deterministic_reply(text, context)
+        reply = _execute_intent(parsed_intent, context)
     return Response(content=message_response(reply), media_type="text/xml")

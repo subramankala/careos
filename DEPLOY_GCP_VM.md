@@ -38,6 +38,7 @@ Required vars to review before start:
 - `CAREOS_GATEWAY_MODE` (`disabled` or `external`)
 - `CAREOS_GATEWAY_PORT` (default `8220`)
 - `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional external OpenClaw endpoint)
+- `CAREOS_GATEWAY_DASHBOARD_BASE_URL` (Care-Dash service base URL, default `http://127.0.0.1:8000`)
 - `CAREOS_GATEWAY_OPENCLAW_FALLBACK_PATH` (optional OpenClaw fallback path override)
 - `CAREOS_GATEWAY_PENDING_ACTION_TTL_MINUTES` (default `10`)
 - `CAREOS_GATEWAY_CONVERSATION_MODE` (`openclaw_first` recommended, fallback `deterministic_first`)
@@ -132,6 +133,11 @@ curl -s -X POST http://127.0.0.1:8220/gateway/twilio/webhook \
 
 4. Update Twilio inbound URL to `/gateway/twilio/webhook`.
 5. Observe logs for first live messages.
+
+### Care-Dash dispatch note
+
+Keep a single Twilio inbound URL at `/gateway/twilio/webhook`.
+The gateway can now detect caregiver dashboard / patient-summary style requests and issue Care-Dash links via `CAREOS_GATEWAY_DASHBOARD_BASE_URL`, while all other messages continue through the existing CareOS flow.
 
 ### Rollback checklist
 

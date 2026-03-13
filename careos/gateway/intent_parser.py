@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import get_close_matches
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.error import URLError
@@ -10,6 +11,7 @@ from urllib.request import Request, urlopen
 from careos.settings import settings
 
 ALLOWED_INTENTS = {
+    "caregiver_dashboard",
     "schedule_today",
     "schedule_tomorrow",
     "status",
@@ -31,10 +33,62 @@ class IntentParseResult:
     rationale: str = ""
 
 
+def _tokens(text: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", text.lower()) if token]
+
+
+def _has_dashboardish_token(tokens: list[str]) -> bool:
+    if "dashboard" in tokens:
+        return True
+    return bool(get_close_matches("dashboard", tokens, n=1, cutoff=0.78))
+
+
+def _looks_like_dashboard_request(text: str) -> bool:
+    lower = text.strip().lower()
+    tokens = _tokens(lower)
+    if not tokens:
+        return False
+    if _has_dashboardish_token(tokens):
+        return True
+    phrases = {
+        "patient summary",
+        "caregiver summary",
+        "care summary",
+        "patient dashboard",
+        "caregiver dashboard",
+        "patient report",
+        "care report",
+        "patient overview",
+        "care overview",
+        "my patient summary",
+    }
+    if any(phrase in lower for phrase in phrases):
+        return True
+    summary_words = {"summary", "progress", "overview", "report", "dashboard"}
+    actor_words = {"patient", "caregiver", "care"}
+    request_words = {"show", "open", "view", "give", "need", "want", "check", "see"}
+    possession_words = {"my"}
+    if summary_words.intersection(tokens) and actor_words.intersection(tokens):
+        return True
+    if summary_words.intersection(tokens) and possession_words.intersection(tokens) and "patient" in tokens:
+        return True
+    if "status" in tokens and actor_words.intersection(tokens) and request_words.intersection(tokens):
+        return True
+    if {"how", "doing"}.intersection(tokens) == {"how", "doing"} and (
+        actor_words.intersection(tokens) or {"my", "patient"}.intersection(tokens) == {"my", "patient"}
+    ):
+        return True
+    if {"check", "patient"}.intersection(tokens) == {"check", "patient"}:
+        return True
+    return False
+
+
 def _rule_parse(text: str) -> IntentParseResult:
     lower = text.strip().lower()
     if not lower:
         return IntentParseResult(intent="clarify", confidence=0.1, rationale="empty_text")
+    if _looks_like_dashboard_request(lower):
+        return IntentParseResult(intent="caregiver_dashboard", confidence=0.9, rationale="dashboard_request")
     if "tomorrow" in lower:
         return IntentParseResult(intent="schedule_tomorrow", confidence=0.85, rationale="contains_tomorrow")
     if "schedule" in lower or "pending" in lower or "left today" in lower:
@@ -126,6 +180,8 @@ def _llm_parse(text: str, context: dict, today: dict, status: dict) -> IntentPar
 
 
 def parse_intent(text: str, *, context: dict, today: dict, status: dict) -> IntentParseResult:
+    if _looks_like_dashboard_request(text):
+        return IntentParseResult(intent="caregiver_dashboard", confidence=0.95, rationale="dashboard_request_pre_llm")
     llm = _llm_parse(text, context, today, status)
     threshold = float(getattr(settings, "gateway_intent_min_confidence", 0.72))
     if llm is not None:

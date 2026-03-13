@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Header, HTTPException
@@ -42,6 +43,10 @@ def _request_json(
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _query_path(path: str, **params: Any) -> str:
+    return f"{path}?{urlencode(params, doseq=True)}"
+
+
 def _require_write_role(arguments: dict[str, Any]) -> tuple[str, str]:
     actor_id = str(arguments.get("actor_id", "")).strip()
     actor_role = str(arguments.get("actor_role", "")).strip().lower()
@@ -66,6 +71,60 @@ def _optional_dedupe(arguments: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _read_tool(tool: str, args: dict[str, Any]) -> dict[str, Any] | list[Any]:
+    if tool == "careos_resolve_caregiver_context":
+        phone_number = str(args.get("phone_number", "")).strip()
+        if not phone_number:
+            raise HTTPException(status_code=400, detail="phone_number is required")
+        return _request_json(_query_path("/internal/resolve-context", phone_number=phone_number))
+
+    if tool == "careos_get_view_access":
+        actor_id = str(args.get("actor_id", "")).strip()
+        patient_id = str(args.get("patient_id", "")).strip()
+        tenant_id = str(args.get("tenant_id", "")).strip()
+        view = str(args.get("view", "caregiver_dashboard")).strip()
+        if not actor_id or not patient_id or not tenant_id:
+            raise HTTPException(status_code=400, detail="actor_id, patient_id, tenant_id are required")
+        return _request_json(
+            _query_path(
+                "/internal/dashboard/access",
+                actor_id=actor_id,
+                patient_id=patient_id,
+                tenant_id=tenant_id,
+                view=view,
+            )
+        )
+
+    if tool == "careos_get_patient_summary":
+        patient_id = str(args.get("patient_id", "")).strip()
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
+        return _request_json(_query_path("/internal/dashboard/patient-summary", patient_id=patient_id))
+
+    if tool == "careos_get_escalations":
+        patient_id = str(args.get("patient_id", "")).strip()
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
+        return _request_json(_query_path("/internal/dashboard/escalations", patient_id=patient_id))
+
+    if tool == "careos_get_medications":
+        patient_id = str(args.get("patient_id", "")).strip()
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
+        return _request_json(_query_path("/internal/dashboard/medications", patient_id=patient_id))
+
+    if tool == "careos_get_recent_events":
+        patient_id = str(args.get("patient_id", "")).strip()
+        limit = int(args.get("limit", 10) or 10)
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
+        return _request_json(_query_path("/internal/dashboard/recent-events", patient_id=patient_id, limit=limit))
+
+    if tool == "careos_get_task_criticality":
+        patient_id = str(args.get("patient_id", "")).strip()
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
+        return _request_json(_query_path("/internal/dashboard/task-criticality", patient_id=patient_id))
+
     if tool in {"careos_get_today", "careos_get_status", "careos_get_timeline", "careos_get_adherence_summary"}:
         patient_id = str(args.get("patient_id", "")).strip()
         if not patient_id:
@@ -176,6 +235,13 @@ class ToolSpec:
 
 
 TOOLS: list[ToolSpec] = [
+    ToolSpec("careos_resolve_caregiver_context", False, "Resolve caregiver/patient context from phone number."),
+    ToolSpec("careos_get_view_access", False, "Resolve caregiver dashboard access for actor and patient."),
+    ToolSpec("careos_get_patient_summary", False, "Get caregiver dashboard patient summary."),
+    ToolSpec("careos_get_escalations", False, "Get caregiver dashboard escalations."),
+    ToolSpec("careos_get_medications", False, "Get caregiver dashboard medications."),
+    ToolSpec("careos_get_recent_events", False, "Get caregiver dashboard recent events."),
+    ToolSpec("careos_get_task_criticality", False, "Get caregiver dashboard task criticality."),
     ToolSpec("careos_get_today", False, "Get patient's today timeline."),
     ToolSpec("careos_get_status", False, "Get patient status counts/adherence."),
     ToolSpec("careos_get_timeline", False, "Get today's timeline entries."),

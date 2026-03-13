@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     openai_timeout_seconds: int = 15
     gateway_mode: str = "disabled"
     gateway_careos_base_url: str = "http://127.0.0.1:8115"
+    gateway_dashboard_base_url: str = "http://127.0.0.1:8000"
     gateway_intent_min_confidence: float = 0.72
     gateway_host: str = "0.0.0.0"
     gateway_port: int = 8220

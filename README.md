@@ -98,6 +98,7 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_ENABLE_SCHEDULER_WHATSAPP_PUSH=true|false` (default `false`; opt-in)
 - `CAREOS_GATEWAY_MODE=disabled|external` (default `disabled`)
 - `CAREOS_GATEWAY_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
+- `CAREOS_GATEWAY_DASHBOARD_BASE_URL` (default `http://127.0.0.1:8000`)
 - `CAREOS_GATEWAY_OPENCLAW_BASE_URL` (optional upstream OpenClaw base URL)
 - `CAREOS_GATEWAY_OPENCLAW_FALLBACK_PATH` (optional OpenClaw fallback path override)
 - `CAREOS_GATEWAY_OPENCLAW_RESPONSES_PATH` (optional OpenClaw Responses API path, default `/v1/responses`)
@@ -181,6 +182,15 @@ Gateway endpoints (new scaffold):
 - `GET /health` (gateway service port)
 - `POST /gateway/twilio/webhook`
 - `POST /gateway/careos/events` (policy-bounded outbound mediation)
+
+Single-webhook dashboard dispatch:
+- Keep Twilio pointed at `POST /gateway/twilio/webhook`.
+- The gateway now treats dashboard-like caregiver requests as a separate intent and issues a Care-Dash link through `CAREOS_GATEWAY_DASHBOARD_BASE_URL`.
+- Supported phrasing is broader than the original exact command and includes requests resembling:
+  - `show caregiver dashboard`
+  - `patient summary`
+  - `show patient status`
+  - typo variants close to `dashboard`
 
 Twilio cutover:
 - direct mode: `/twilio/webhook`

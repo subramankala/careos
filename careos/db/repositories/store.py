@@ -637,8 +637,12 @@ class InMemoryStore(Store):
         return {
             "patient_id": str(patient_id),
             "tenant_id": str(patient["tenant_id"]),
+            "display_name": str(patient.get("display_name", "") or ""),
             "timezone": str(patient.get("timezone", "UTC") or "UTC"),
             "persona_type": str(patient.get("persona_type", PersonaType.CAREGIVER_MANAGED_ELDER.value)),
+            "primary_language": str(patient.get("primary_language", "en") or "en"),
+            "risk_level": str(patient.get("risk_level", "medium") or "medium"),
+            "status": str(patient.get("status", "active") or "active"),
         }
 
     def list_today(self, patient_id: str, now: datetime) -> list[TimelineItem]:
@@ -1481,7 +1485,7 @@ class PostgresStore(Store):
 
     def get_patient_profile(self, patient_id: str) -> dict | None:
         sql = """
-        SELECT id, tenant_id, timezone, persona_type
+        SELECT id, tenant_id, display_name, timezone, persona_type, primary_language, risk_level, status
         FROM patients
         WHERE id = %s
         """
@@ -1494,8 +1498,12 @@ class PostgresStore(Store):
             return {
                 "patient_id": str(data["id"]),
                 "tenant_id": str(data["tenant_id"]),
+                "display_name": str(data["display_name"] or ""),
                 "timezone": str(data["timezone"] or "UTC"),
                 "persona_type": str(data["persona_type"] or PersonaType.CAREGIVER_MANAGED_ELDER.value),
+                "primary_language": str(data["primary_language"] or "en"),
+                "risk_level": str(data["risk_level"] or "medium"),
+                "status": str(data["status"] or "active"),
             }
 
     def ensure_recurrence_instances(self, patient_id: str, now: datetime, horizon_days: int = 30) -> int:

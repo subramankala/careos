@@ -81,3 +81,63 @@ def test_rule_parse_critical_missed_when_llm_unset() -> None:
         assert parsed.intent == "critical_missed_today"
     finally:
         settings.openai_api_key = previous_key
+
+
+def test_rule_parse_dashboard_for_patient_summary_phrase() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "give me the patient summary",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "caregiver_dashboard"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_rule_parse_dashboard_for_typo_variant() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "show caregiver dshboard",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "caregiver_dashboard"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_rule_parse_dashboard_for_patient_report_phrase() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "show me my patient report",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "caregiver_dashboard"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_rule_parse_dashboard_for_how_is_patient_doing() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "how is my patient doing?",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "caregiver_dashboard"
+    finally:
+        settings.openai_api_key = previous_key
