@@ -92,3 +92,21 @@ def test_caregiver_approval_continues_into_setup_menu() -> None:
 
     menu = _twilio(caregiver_phone, "menu", "SM-cg-9")
     assert "Care setup menu:" in menu
+
+
+def test_setup_menu_restart_and_cancel_commands_work_mid_wizard() -> None:
+    settings.validate_twilio_signature = False
+    phone = "whatsapp:+15558880005"
+    _self_onboard_until_setup(phone)
+
+    _twilio(phone, "1", "SM-setup-reset-1")
+    name_prompt = _twilio(phone, "restart setup", "SM-setup-reset-2")
+    assert "Care setup menu:" in name_prompt
+
+    _twilio(phone, "1", "SM-setup-reset-3")
+    cancelled = _twilio(phone, "cancel setup", "SM-setup-reset-4")
+    assert "Okay, I cancelled setup." in cancelled
+    session = context.store.get_onboarding_session(phone)
+    assert session is not None
+    assert session.status == "completed"
+    assert session.completion_note == "setup_cancelled"

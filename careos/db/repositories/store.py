@@ -69,6 +69,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_win_binding(self, win_instance_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         raise NotImplementedError
 
@@ -387,6 +391,26 @@ class InMemoryStore(Store):
             return None
         candidates.sort(key=lambda item: int(item.get("version", 0)), reverse=True)
         return dict(candidates[0])
+
+    def get_win_binding(self, win_instance_id: str) -> dict | None:
+        instance = self.win_instances.get(str(win_instance_id))
+        if instance is None:
+            return None
+        definition = self.win_definitions.get(str(instance.get("win_definition_id")))
+        if definition is None:
+            return None
+        return {
+            "win_instance_id": str(instance["id"]),
+            "win_definition_id": str(definition["id"]),
+            "care_plan_id": str(definition["care_plan_id"]),
+            "patient_id": str(instance["patient_id"]),
+            "title": str(definition.get("title", "")),
+            "category": str(definition.get("category", "")),
+            "instructions": str(definition.get("instructions", "")),
+            "criticality": str(definition.get("criticality", "medium")),
+            "flexibility": str(definition.get("flexibility", "flexible")),
+            "recurrence_type": str(definition.get("recurrence_type", "one_off")),
+        }
 
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
         normalized = _normalize_phone(phone_number)
@@ -1101,6 +1125,30 @@ class PostgresStore(Store):
         """
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (patient_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
+    def get_win_binding(self, win_instance_id: str) -> dict | None:
+        sql = """
+        SELECT wi.id AS win_instance_id,
+               wi.patient_id,
+               wi.win_definition_id,
+               wd.care_plan_id,
+               wd.title,
+               wd.category,
+               wd.instructions,
+               wd.criticality,
+               wd.flexibility,
+               wd.recurrence_type
+        FROM win_instances wi
+        JOIN win_definitions wd ON wd.id = wi.win_definition_id
+        WHERE wi.id = %s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (win_instance_id,))
             row = cur.fetchone()
             if row is None:
                 return None

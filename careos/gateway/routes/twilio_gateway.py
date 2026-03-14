@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request, Response
 
+from careos.app_context import context as app_context
 from careos.conversation.openclaw_engine import OpenClawConversationEngine
 from careos.domain.enums.core import PersonaType, Role
-from careos.domain.models.api import CommandResult, ParticipantContext
+from careos.domain.models.api import CommandResult, LinkedPatientSummary, ParticipantContext, ParticipantIdentity
+from careos.gateway.action_proposals import (
+    is_cancellation,
+    is_confirmation,
+)
+from careos.gateway.action_planner import CompiledActionPlan, deserialize_compiled_plan, plan_action_request, serialize_compiled_plan
 from careos.gateway.careos_adapter import CareOSAdapter, DashboardLinkError
+from careos.gateway.careos_adapter import TaskEditError
 from careos.gateway.intent_parser import IntentParseResult, parse_intent
 from careos.integrations.twilio.twiml import message_response
 from careos.logging import get_logger
@@ -18,6 +26,15 @@ from careos.settings import settings
 router = APIRouter()
 adapter = CareOSAdapter()
 logger = get_logger("gateway_twilio_webhook")
+
+
+@dataclass(frozen=True)
+class PendingGatewayAction:
+    plan: CompiledActionPlan
+    expires_at: datetime
+
+
+_PENDING_ACTIONS: dict[str, PendingGatewayAction] = {}
 openclaw_delegate = OpenClawConversationEngine(
     base_url=(settings.gateway_openclaw_base_url or settings.openclaw_base_url or "").strip(),
     timeout_seconds=settings.openclaw_timeout_seconds,
@@ -48,6 +65,116 @@ def _normalize_sender_phone(sender: str) -> str:
     return value.replace(" ", "")
 
 
+def _patients_prompt(patients: list[LinkedPatientSummary], active_patient_id: str | None = None) -> str:
+    lines = ["Multiple patients are linked to this number."]
+    for index, patient in enumerate(patients, start=1):
+        marker = " *" if active_patient_id and patient.patient_id == active_patient_id else ""
+        lines.append(f"{index}. {patient.display_name} ({patient.timezone}){marker}")
+    lines.append("Reply: use <number>")
+    return "\n".join(lines)
+
+
+def _single_patient_prompt(patient: LinkedPatientSummary) -> str:
+    return f"Active patient: {patient.display_name} ({patient.timezone})."
+
+
+def _is_legacy_router_command(text: str) -> bool:
+    normalized = text.strip().lower()
+    if normalized in {"help", "?", "next", "whoami", "profile", "schedule", "today", "status"}:
+        return True
+    return normalized.startswith("done ") or normalized.startswith("skip ") or normalized.startswith("delay ")
+
+
+def _normalize_setup_intent(text: str) -> str | None:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return None
+    if normalized in {"add a medication", "add medication", "add a medicine", "add medicine"}:
+        return "add medications"
+    if normalized in {"add an appointment", "add appointment"}:
+        return "add appointments"
+    if normalized in {"add a routine", "add routine"}:
+        return "add routines"
+    return None
+
+
+def _parse_use_target(raw_body: str) -> str | None:
+    parts = raw_body.strip().split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    if parts[0].lower() != "use":
+        return None
+    return parts[1].strip()
+
+
+def _resolve_use_target(target: str, linked_patients: list[LinkedPatientSummary]) -> LinkedPatientSummary | None:
+    if not target:
+        return None
+    if target.isdigit():
+        index = int(target)
+        if index < 1 or index > len(linked_patients):
+            return None
+        return linked_patients[index - 1]
+    for patient in linked_patients:
+        if patient.patient_id == target:
+            return patient
+    return None
+
+
+def _resolve_context_for_message(
+    body: str,
+    identity: ParticipantIdentity,
+    linked_patients: list[LinkedPatientSummary],
+) -> tuple[str, str | None]:
+    normalized = body.strip().lower()
+    active_patient_id = app_context.identity_service.get_active_patient_context(identity.participant_id)
+
+    if len(linked_patients) == 0:
+        return ("We could not match this number to a CareOS profile. Ask your caregiver to complete onboarding.", None)
+
+    use_target = _parse_use_target(body)
+    if use_target is not None:
+        selected = _resolve_use_target(use_target, linked_patients)
+        if selected is None:
+            if len(linked_patients) > 1:
+                return ("Invalid selection.\n" + _patients_prompt(linked_patients, active_patient_id), None)
+            return ("Invalid selection.", None)
+        try:
+            app_context.identity_service.set_active_patient_context(
+                identity.participant_id,
+                selected.patient_id,
+                "whatsapp_use_command",
+            )
+        except ValueError:
+            return ("Could not switch patient context safely. Please try again.", None)
+        return (f"Switched to {selected.display_name} ({selected.timezone}).", selected.patient_id)
+
+    if len(linked_patients) == 1:
+        only = linked_patients[0]
+        if active_patient_id != only.patient_id:
+            app_context.identity_service.set_active_patient_context(identity.participant_id, only.patient_id, "auto_single_link")
+        return ("", only.patient_id)
+
+    if normalized in {"patients", "switch"}:
+        return (_patients_prompt(linked_patients, active_patient_id), None)
+
+    if normalized in {"whoami", "profile"} and not active_patient_id:
+        text = (
+            f"You are {identity.participant_role.value}. Active patient: none selected.\n"
+            + _patients_prompt(linked_patients, None)
+        )
+        return (text, None)
+
+    if active_patient_id is None:
+        return (_patients_prompt(linked_patients, None), None)
+
+    if active_patient_id not in {item.patient_id for item in linked_patients}:
+        app_context.identity_service.clear_active_patient_context(identity.participant_id)
+        return (_patients_prompt(linked_patients, None), None)
+
+    return ("", active_patient_id)
+
+
 def _render_schedule(payload: dict, *, prefix: str = "Schedule") -> str:
     timeline = payload.get("timeline", [])
     if not timeline:
@@ -60,6 +187,64 @@ def _render_schedule(payload: dict, *, prefix: str = "Schedule") -> str:
         local_time = start.astimezone(tz).strftime("%H:%M")
         lines.append(f"{idx}. {local_time} {item['title']} [{item['current_state']}]")
     return "\n".join(lines)
+
+
+def _pending_key(context: dict) -> str:
+    return f"{context['tenant_id']}:{context['participant_id']}:{context['patient_id']}"
+
+
+def _store_pending_action(context: dict, plan: CompiledActionPlan) -> None:
+    ttl_minutes = max(int(settings.gateway_pending_action_ttl_minutes), 1)
+    pending_key = _pending_key(context)
+    pending = PendingGatewayAction(
+        plan=plan,
+        expires_at=datetime.now(UTC) + timedelta(minutes=ttl_minutes),
+    )
+    _PENDING_ACTIONS[pending_key] = pending
+    adapter.save_pending_gateway_action(
+        pending_key=pending_key,
+        plan=serialize_compiled_plan(plan),
+        expires_at_iso=pending.expires_at.isoformat(),
+    )
+
+
+def _pop_pending_action(context: dict) -> PendingGatewayAction | None:
+    key = _pending_key(context)
+    pending = _PENDING_ACTIONS.get(key)
+    if pending is None:
+        persisted = adapter.get_pending_gateway_action(key)
+        if persisted is None:
+            return None
+        pending = PendingGatewayAction(
+            plan=deserialize_compiled_plan(dict(persisted["plan"])),
+            expires_at=datetime.fromisoformat(str(persisted["expires_at"])),
+        )
+    if pending.expires_at <= datetime.now(UTC):
+        _PENDING_ACTIONS.pop(key, None)
+        adapter.clear_pending_gateway_action(key)
+        return None
+    _PENDING_ACTIONS.pop(key, None)
+    adapter.clear_pending_gateway_action(key)
+    return pending
+
+
+def _get_pending_action(context: dict) -> PendingGatewayAction | None:
+    key = _pending_key(context)
+    pending = _PENDING_ACTIONS.get(key)
+    if pending is None:
+        persisted = adapter.get_pending_gateway_action(key)
+        if persisted is None:
+            return None
+        pending = PendingGatewayAction(
+            plan=deserialize_compiled_plan(dict(persisted["plan"])),
+            expires_at=datetime.fromisoformat(str(persisted["expires_at"])),
+        )
+        _PENDING_ACTIONS[key] = pending
+    if pending.expires_at <= datetime.now(UTC):
+        _PENDING_ACTIONS.pop(key, None)
+        adapter.clear_pending_gateway_action(key)
+        return None
+    return pending
 
 
 def _execute_intent(intent: IntentParseResult, context: dict) -> str:
@@ -157,6 +342,48 @@ def _execute_intent(intent: IntentParseResult, context: dict) -> str:
     return "Please rephrase. I can help with schedule, tomorrow, status, medication counts, done, skip, and delay."
 
 
+def _execute_pending_action(pending: PendingGatewayAction) -> str:
+    plan = pending.plan
+    proposal = plan.bound.parsed.proposal
+    payload = plan.execution_payload
+    if plan.execution_strategy == "create_task":
+        adapter.create_task(
+            patient_id=str(payload["patient_id"]),
+            actor_id=str(payload["actor_id"]),
+            category=str(payload["category"]),
+            title=str(payload["title"]),
+            instructions=str(payload["instructions"]),
+            start_at_iso=str(payload["start_at_iso"]),
+            end_at_iso=str(payload["end_at_iso"]),
+            criticality=str(payload["criticality"]),
+            flexibility=str(payload["flexibility"]),
+        )
+        return f"Created {proposal.title.lower()}. You can ask for your dashboard to verify it."
+    if plan.execution_strategy in {"reschedule_one_off_task", "override_recurring_task"} and proposal.target_instance_id:
+        try:
+            if plan.execution_strategy == "reschedule_one_off_task":
+                adapter.reschedule_task(
+                    win_instance_id=str(payload["win_instance_id"]),
+                    actor_id=str(payload["actor_id"]),
+                    start_at_iso=str(payload["start_at_iso"]),
+                    end_at_iso=str(payload["end_at_iso"]),
+                )
+            else:
+                adapter.override_recurring_task(
+                    win_instance_id=str(payload["win_instance_id"]),
+                    actor_id=str(payload["actor_id"]),
+                    start_at_iso=str(payload["start_at_iso"]),
+                    end_at_iso=str(payload["end_at_iso"]),
+                )
+        except TaskEditError:
+            return "I could not safely move that task."
+        return f"Moved {proposal.title.lower()}. You can ask for your schedule to verify it."
+    if plan.execution_strategy == "complete_task" and proposal.target_instance_id:
+        adapter.complete_win(str(payload["win_instance_id"]), str(payload["actor_id"]))
+        return f"Marked {proposal.title.lower()} as completed."
+    return "I could not execute that pending action."
+
+
 def _to_participant_context(context_row: dict) -> ParticipantContext:
     return ParticipantContext(
         tenant_id=str(context_row["tenant_id"]),
@@ -186,17 +413,104 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     if not sender:
         return Response(content=message_response("Missing sender."), media_type="text/xml")
 
-    context = adapter.resolve_context(sender)
-    if context is None:
+    identity = app_context.identity_service.resolve_participant_by_phone(sender)
+    linked_patients: list[LinkedPatientSummary] = []
+    if identity is not None:
+        linked_patients = app_context.identity_service.list_linked_patients(identity.participant_id)
+
+    onboarding_reply = app_context.onboarding.maybe_handle_message(
+        sender_phone=sender,
+        body=text,
+        identity=identity,
+        linked_patient_count=len(linked_patients),
+    )
+    if onboarding_reply is not None:
+        return Response(content=message_response(onboarding_reply), media_type="text/xml")
+
+    if identity is None:
         return Response(
-            content=message_response("Could not resolve sender identity. Ask caregiver to complete onboarding."),
+            content=message_response("Could not resolve sender identity. Reply 'hi' to start onboarding."),
             media_type="text/xml",
         )
 
+    preflight_text, selected_patient_id = _resolve_context_for_message(text, identity, linked_patients)
+    if selected_patient_id is None:
+        return Response(content=message_response(preflight_text), media_type="text/xml")
+    if preflight_text:
+        return Response(content=message_response(preflight_text), media_type="text/xml")
+
+    setup_intent = _normalize_setup_intent(text)
+    if setup_intent is not None:
+        if hasattr(app_context.onboarding, "_activate_setup_session"):
+            app_context.onboarding._activate_setup_session(  # type: ignore[attr-defined]
+                phone_number=sender,
+                participant_id=identity.participant_id,
+                patient_id=selected_patient_id,
+                source="gateway_setup_shortcut",
+            )
+        setup_reply = app_context.onboarding.maybe_handle_message(
+            sender_phone=sender,
+            body=setup_intent,
+            identity=identity,
+            linked_patient_count=len(linked_patients),
+        )
+        if setup_reply is not None:
+            return Response(content=message_response(setup_reply), media_type="text/xml")
+
+    context = adapter.resolve_context(sender)
+    if context is None:
+        return Response(
+            content=message_response("Could not resolve active patient context."),
+            media_type="text/xml",
+        )
+
+    pending = _get_pending_action(context)
+    if pending is not None and is_confirmation(text):
+        reply = _execute_pending_action(_pop_pending_action(context) or pending)
+        return Response(content=message_response(reply), media_type="text/xml")
+    if pending is not None and is_cancellation(text):
+        _pop_pending_action(context)
+        return Response(content=message_response("Okay, I did not create that change."), media_type="text/xml")
+
+    normalized = text.strip().lower()
+    if normalized in {"patients", "switch"}:
+        if linked_patients:
+            if len(linked_patients) == 1:
+                return Response(
+                    content=message_response(_single_patient_prompt(linked_patients[0])),
+                    media_type="text/xml",
+                )
+            return Response(
+                content=message_response(_patients_prompt(linked_patients, str(context["patient_id"]))),
+                media_type="text/xml",
+            )
+        return Response(
+            content=message_response("No linked patients were found for this number."),
+            media_type="text/xml",
+        )
+
+    if _is_legacy_router_command(text):
+        result = app_context.router.handle(text, _to_participant_context(context))
+        return Response(content=message_response(result.text), media_type="text/xml")
+
     today = adapter.get_today(str(context["patient_id"]))
+    compiled_plan = plan_action_request(text, context, today.get("timeline", []), adapter)
+    if compiled_plan is not None and compiled_plan.execution_strategy == "clarify_target":
+        return Response(content=message_response(compiled_plan.confirmation_text), media_type="text/xml")
+    if compiled_plan is not None:
+        _store_pending_action(context, compiled_plan)
+        return Response(content=message_response(compiled_plan.confirmation_text), media_type="text/xml")
+
     status = adapter.get_status(str(context["patient_id"]))
     parsed_intent = parse_intent(text, context=context, today=today, status=status)
-    if parsed_intent.intent == "caregiver_dashboard":
+    if parsed_intent.intent in {
+        "caregiver_dashboard",
+        "schedule_today",
+        "schedule_tomorrow",
+        "status",
+        "med_count_today",
+        "critical_missed_today",
+    }:
         reply = _execute_intent(parsed_intent, context)
         return Response(content=message_response(reply), media_type="text/xml")
 

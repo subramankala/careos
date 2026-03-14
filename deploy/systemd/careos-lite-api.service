@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/careos-lite
-EnvironmentFile=/opt/careos-lite/.env
-ExecStart=/opt/careos-lite/.venv/bin/uvicorn careos.main:app --host 0.0.0.0 --port 8115
+WorkingDirectory=/home/kumarmankala/careos
+EnvironmentFile=/home/kumarmankala/careos/.env
+ExecStart=/home/kumarmankala/careos/.venv/bin/uvicorn careos.main:app --host 0.0.0.0 --port 8115
 Restart=always
 RestartSec=3
 User=ubuntu

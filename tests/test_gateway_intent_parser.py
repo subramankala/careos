@@ -141,3 +141,48 @@ def test_rule_parse_dashboard_for_how_is_patient_doing() -> None:
         assert parsed.intent == "caregiver_dashboard"
     finally:
         settings.openai_api_key = previous_key
+
+
+def test_pre_llm_parse_schedule_literal() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = "dummy-key"
+    try:
+        parsed = parse_intent(
+            "schedule",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "schedule_today"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_pre_llm_parse_whats_today_schedule() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = "dummy-key"
+    try:
+        parsed = parse_intent(
+            "what's today's schedule",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "schedule_today"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_pre_llm_parse_status_literal() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = "dummy-key"
+    try:
+        parsed = parse_intent(
+            "status",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "status"
+    finally:
+        settings.openai_api_key = previous_key

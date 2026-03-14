@@ -28,3 +28,9 @@ def skip_win(instance_id: str, payload: WinActionRequest) -> dict:
 def escalate_win(instance_id: str, payload: WinActionRequest) -> dict:
     context.win_service.escalate(instance_id, payload.actor_participant_id)
     return {"ok": True}
+
+
+@router.post("/wins/{instance_id}/supersede")
+def supersede_win(instance_id: str, payload: WinActionRequest) -> dict:
+    context.win_service.supersede(instance_id, payload.actor_participant_id)
+    return {"ok": True}

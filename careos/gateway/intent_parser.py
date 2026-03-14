@@ -83,12 +83,60 @@ def _looks_like_dashboard_request(text: str) -> bool:
     return False
 
 
+def _looks_like_create_request(text: str) -> bool:
+    lower = text.strip().lower()
+    if not lower:
+        return False
+    create_verbs = {"add", "create", "plan", "put", "remind", "book"}
+    if any(verb in _tokens(lower) for verb in create_verbs):
+        return True
+    return lower.startswith("schedule ") and any(
+        keyword in lower for keyword in {"appointment", "visit", "consult", "reminder", "med", "medication"}
+    )
+
+
+def _pre_llm_read_intent(text: str) -> IntentParseResult | None:
+    lower = text.strip().lower()
+    if not lower:
+        return None
+    if _looks_like_create_request(lower):
+        return None
+    tokens = _tokens(lower)
+    if "tomorrow" in lower:
+        return IntentParseResult(intent="schedule_tomorrow", confidence=0.93, rationale="schedule_tomorrow_pre_llm")
+    schedule_phrases = {
+        "today schedule",
+        "today's schedule",
+        "todays schedule",
+        "what is my schedule today",
+        "what's my schedule today",
+        "what is today's schedule",
+        "what's today's schedule",
+        "what do i have today",
+    }
+    if lower == "schedule" or any(phrase in lower for phrase in schedule_phrases):
+        return IntentParseResult(intent="schedule_today", confidence=0.93, rationale="schedule_today_pre_llm")
+    if "schedule" in tokens and "today" in tokens:
+        return IntentParseResult(intent="schedule_today", confidence=0.91, rationale="schedule_today_tokens_pre_llm")
+    if "status" in tokens or "adherence" in tokens:
+        return IntentParseResult(intent="status", confidence=0.9, rationale="status_pre_llm")
+    if ("how many" in lower or "count" in lower or "total" in lower) and (
+        "med" in lower or "medication" in lower
+    ):
+        return IntentParseResult(intent="med_count_today", confidence=0.9, rationale="med_count_pre_llm")
+    if "critical" in lower and ("missed" in lower or "miss any" in lower or "did i miss" in lower):
+        return IntentParseResult(intent="critical_missed_today", confidence=0.9, rationale="critical_missed_pre_llm")
+    return None
+
+
 def _rule_parse(text: str) -> IntentParseResult:
     lower = text.strip().lower()
     if not lower:
         return IntentParseResult(intent="clarify", confidence=0.1, rationale="empty_text")
     if _looks_like_dashboard_request(lower):
         return IntentParseResult(intent="caregiver_dashboard", confidence=0.9, rationale="dashboard_request")
+    if _looks_like_create_request(lower):
+        return IntentParseResult(intent="clarify", confidence=0.35, rationale="create_request_deferred")
     if "tomorrow" in lower:
         return IntentParseResult(intent="schedule_tomorrow", confidence=0.85, rationale="contains_tomorrow")
     if "schedule" in lower or "pending" in lower or "left today" in lower:
@@ -182,6 +230,9 @@ def _llm_parse(text: str, context: dict, today: dict, status: dict) -> IntentPar
 def parse_intent(text: str, *, context: dict, today: dict, status: dict) -> IntentParseResult:
     if _looks_like_dashboard_request(text):
         return IntentParseResult(intent="caregiver_dashboard", confidence=0.95, rationale="dashboard_request_pre_llm")
+    read_intent = _pre_llm_read_intent(text)
+    if read_intent is not None:
+        return read_intent
     llm = _llm_parse(text, context, today, status)
     threshold = float(getattr(settings, "gateway_intent_min_confidence", 0.72))
     if llm is not None:

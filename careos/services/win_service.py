@@ -79,6 +79,9 @@ class WinService:
     def escalate(self, win_instance_id: str, actor_id: str) -> None:
         self.store.mark_win(win_instance_id, actor_id, WinState.ESCALATED)
 
+    def supersede(self, win_instance_id: str, actor_id: str) -> None:
+        self.store.mark_win(win_instance_id, actor_id, WinState.SUPERSEDED)
+
     def adherence_summary(self, patient_id: str, day: date | None = None) -> AdherenceSummaryResponse:
         target_day = day or datetime.now(UTC).date()
         data = self.store.adherence_summary(patient_id, target_day)

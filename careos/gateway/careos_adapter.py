@@ -14,6 +14,10 @@ class DashboardLinkError(RuntimeError):
     pass
 
 
+class TaskEditError(RuntimeError):
+    pass
+
+
 class CareOSAdapter:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or getattr(settings, "gateway_careos_base_url", "") or "http://127.0.0.1:8115").rstrip("/")
@@ -52,6 +56,34 @@ class CareOSAdapter:
 
     def get_status(self, patient_id: str) -> dict[str, Any]:
         return self._request(f"/patients/{patient_id}/status")
+
+    def get_active_care_plan(self, patient_id: str) -> dict[str, Any]:
+        encoded = quote(str(patient_id), safe="")
+        return self._request(f"/internal/care-plans/active?patient_id={encoded}")
+
+    def get_win_binding(self, win_instance_id: str) -> dict[str, Any]:
+        encoded = quote(str(win_instance_id), safe="")
+        return self._request(f"/internal/wins/binding?win_instance_id={encoded}")
+
+    def get_pending_gateway_action(self, pending_key: str) -> dict[str, Any] | None:
+        encoded = quote(str(pending_key), safe="")
+        try:
+            return self._request(f"/internal/gateway/pending-action?pending_key={encoded}")
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+    def save_pending_gateway_action(self, *, pending_key: str, plan: dict[str, Any], expires_at_iso: str) -> dict[str, Any]:
+        return self._request(
+            "/internal/gateway/pending-action",
+            method="POST",
+            payload={"pending_key": pending_key, "plan": plan, "expires_at": expires_at_iso},
+        )
+
+    def clear_pending_gateway_action(self, pending_key: str) -> dict[str, Any]:
+        encoded = quote(str(pending_key), safe="")
+        return self._request(f"/internal/gateway/pending-action?pending_key={encoded}", method="DELETE")
 
     def generate_dashboard_view(
         self,
@@ -93,6 +125,123 @@ class CareOSAdapter:
             method="POST",
             payload={"actor_participant_id": actor_id, "reason": "gateway_intent", "minutes": 0},
         )
+
+    def supersede_win(self, instance_id: str, actor_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/wins/{instance_id}/supersede",
+            method="POST",
+            payload={"actor_participant_id": actor_id, "reason": "gateway_intent", "minutes": 0},
+        )
+
+    def create_task(
+        self,
+        *,
+        patient_id: str,
+        actor_id: str,
+        category: str,
+        title: str,
+        instructions: str,
+        start_at_iso: str,
+        end_at_iso: str,
+        criticality: str,
+        flexibility: str,
+    ) -> dict[str, Any]:
+        care_plan = self.get_active_care_plan(patient_id)
+        care_plan_id = str(care_plan["id"])
+        payload = {
+            "actor_participant_id": actor_id,
+            "reason": "confirmed_whatsapp_walk_request",
+            "supersede_active_due": False,
+            "patient_id": patient_id,
+            "definition": {
+                "category": category,
+                "title": title,
+                "instructions": instructions,
+                "why_it_matters": "Created from confirmed caregiver request.",
+                "criticality": criticality,
+                "flexibility": flexibility,
+                "recurrence_type": "one_off",
+                "recurrence_interval": 1,
+                "recurrence_days_of_week": [],
+                "recurrence_until": None,
+                "temporary_start": start_at_iso,
+                "temporary_end": end_at_iso,
+                "default_channel_policy": {},
+                "escalation_policy": {},
+            },
+            "future_instances": [
+                {
+                    "scheduled_start": start_at_iso,
+                    "scheduled_end": end_at_iso,
+                }
+            ],
+        }
+        return self._request(f"/care-plans/{care_plan_id}/wins/add", method="POST", payload=payload)
+
+    def reschedule_task(
+        self,
+        *,
+        win_instance_id: str,
+        actor_id: str,
+        start_at_iso: str,
+        end_at_iso: str,
+    ) -> dict[str, Any]:
+        binding = self.get_win_binding(win_instance_id)
+        recurrence_type = str(binding.get("recurrence_type", "one_off"))
+        if recurrence_type != "one_off":
+            raise TaskEditError("recurring_task_reschedule_not_supported")
+        care_plan_id = str(binding["care_plan_id"])
+        win_definition_id = str(binding["win_definition_id"])
+        payload = {
+            "actor_participant_id": actor_id,
+            "reason": "confirmed_whatsapp_reschedule_request",
+            "supersede_active_due": True,
+            "temporary_start": start_at_iso,
+            "temporary_end": end_at_iso,
+            "future_instances": [
+                {
+                    "scheduled_start": start_at_iso,
+                    "scheduled_end": end_at_iso,
+                }
+            ],
+        }
+        return self._request(
+            f"/care-plans/{care_plan_id}/wins/{win_definition_id}",
+            method="PATCH",
+            payload=payload,
+        )
+
+    def override_recurring_task(
+        self,
+        *,
+        win_instance_id: str,
+        actor_id: str,
+        start_at_iso: str,
+        end_at_iso: str,
+    ) -> dict[str, Any]:
+        binding = self.get_win_binding(win_instance_id)
+        recurrence_type = str(binding.get("recurrence_type", "one_off"))
+        if recurrence_type == "one_off":
+            raise TaskEditError("override_not_required_for_one_off")
+        patient_id = str(binding["patient_id"])
+        category = str(binding.get("category", "task"))
+        title = str(binding.get("title", "Task"))
+        instructions = str(binding.get("instructions", "")).strip() or f"One-time override for {title.lower()}."
+        criticality = str(binding.get("criticality", "medium"))
+        flexibility = str(binding.get("flexibility", "flexible"))
+        created = self.create_task(
+            patient_id=patient_id,
+            actor_id=actor_id,
+            category=category,
+            title=title,
+            instructions=instructions,
+            start_at_iso=start_at_iso,
+            end_at_iso=end_at_iso,
+            criticality=criticality,
+            flexibility=flexibility,
+        )
+        self.supersede_win(win_instance_id, actor_id)
+        return created
 
     def skip_win(self, instance_id: str, actor_id: str) -> dict[str, Any]:
         return self._request(

@@ -168,6 +168,23 @@ class OnboardingService:
         text = body.strip()
         normalized = text.lower()
 
+        if normalized in {"cancel setup", "cancel wizard"}:
+            self._save_session(
+                sender_phone,
+                state="completed",
+                status="completed",
+                data=session_data,
+                completion_note="setup_cancelled",
+            )
+            return "Okay, I cancelled setup. Reply 'add a medication', 'add an appointment', or 'add a routine' to start again."
+
+        if normalized in {"restart setup", "setup menu", "menu"}:
+            session_data["setup_state"] = "menu"
+            session_data.pop("setup_type", None)
+            session_data.pop("setup_draft", None)
+            self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
+            return self._setup_menu_prompt()
+
         if normalized in {"finish", "finish for now", "4"} and session_data.get("setup_state", "menu") == "menu":
             self._save_session(
                 sender_phone,
@@ -202,9 +219,6 @@ class OnboardingService:
                 session_data["setup_draft"] = {}
                 self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
                 return "Routine category: 1) meal 2) movement 3) sleep 4) therapy"
-            return self._setup_menu_prompt()
-
-        if normalized in {"menu"}:
             return self._setup_menu_prompt()
 
         if session_data.get("setup_type") == "medication":

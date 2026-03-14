@@ -725,6 +725,15 @@ def _record_version_and_change_postgres(
     superseded_ids: list[str],
     created_ids: list[str],
 ) -> None:
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_json_safe(item) for item in value]
+        return value
+
     cur.execute(
         """
         INSERT INTO care_plan_versions (care_plan_id, version, actor_participant_id, reason)
@@ -748,8 +757,8 @@ def _record_version_and_change_postgres(
             action,
             target_id,
             reason,
-            json.dumps(old_value),
-            json.dumps(new_value),
+            json.dumps(_json_safe(old_value)),
+            json.dumps(_json_safe(new_value)),
             superseded_ids,
             created_ids,
         ),

@@ -34,6 +34,12 @@ class MediationDecisionLogRequest(BaseModel):
     idempotency_key: str
 
 
+class GatewayPendingActionRequest(BaseModel):
+    pending_key: str
+    plan: dict = Field(default_factory=dict)
+    expires_at: datetime
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -207,6 +213,84 @@ def patient_summary(patient_id: str = Query(...)) -> dict:
         "risk_level": profile.get("risk_level") or "medium",
         "status": profile.get("status") or "active",
     }
+
+
+@router.get("/internal/care-plans/active")
+def active_care_plan(patient_id: str = Query(...)) -> dict:
+    care_plan = context.store.get_active_care_plan_for_patient(patient_id)
+    if care_plan is None:
+        raise HTTPException(status_code=404, detail="active care plan not found")
+    return {
+        "id": str(care_plan["id"]),
+        "patient_id": str(care_plan["patient_id"]),
+        "status": str(care_plan.get("status", "active")),
+        "version": int(care_plan.get("version", 1) or 1),
+    }
+
+
+@router.get("/internal/wins/binding")
+def win_binding(win_instance_id: str = Query(...)) -> dict:
+    binding = context.store.get_win_binding(win_instance_id)
+    if binding is None:
+        raise HTTPException(status_code=404, detail="win binding not found")
+    return {
+        "win_instance_id": str(binding["win_instance_id"]),
+        "win_definition_id": str(binding["win_definition_id"]),
+        "care_plan_id": str(binding["care_plan_id"]),
+        "patient_id": str(binding["patient_id"]),
+        "title": str(binding.get("title", "")),
+        "category": str(binding.get("category", "")),
+        "instructions": str(binding.get("instructions", "")),
+        "criticality": str(binding.get("criticality", "medium")),
+        "flexibility": str(binding.get("flexibility", "flexible")),
+        "recurrence_type": str(binding.get("recurrence_type", "one_off")),
+    }
+
+
+@router.get("/internal/gateway/pending-action")
+def get_gateway_pending_action(pending_key: str = Query(...)) -> dict:
+    synthetic_phone = f"gateway_pending:{pending_key}"
+    session = context.store.get_onboarding_session(synthetic_phone)
+    if session is None or session.status != "active" or session.expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=404, detail="pending action not found")
+    return {
+        "pending_key": pending_key,
+        "plan": dict(session.data.get("plan") or {}),
+        "expires_at": session.expires_at.isoformat(),
+    }
+
+
+@router.post("/internal/gateway/pending-action")
+def save_gateway_pending_action(payload: GatewayPendingActionRequest) -> dict:
+    synthetic_phone = f"gateway_pending:{payload.pending_key}"
+    session = context.store.save_onboarding_session(
+        phone_number=synthetic_phone,
+        state="gateway_pending_action",
+        status="active",
+        data={"plan": payload.plan},
+        expires_at=payload.expires_at,
+        completion_note="",
+    )
+    return {
+        "pending_key": payload.pending_key,
+        "expires_at": session.expires_at.isoformat(),
+    }
+
+
+@router.delete("/internal/gateway/pending-action")
+def clear_gateway_pending_action(pending_key: str = Query(...)) -> dict:
+    synthetic_phone = f"gateway_pending:{pending_key}"
+    session = context.store.get_onboarding_session(synthetic_phone)
+    if session is not None:
+        context.store.save_onboarding_session(
+            phone_number=synthetic_phone,
+            state="gateway_pending_action",
+            status="completed",
+            data=dict(session.data),
+            expires_at=session.expires_at,
+            completion_note="gateway_pending_cleared",
+        )
+    return {"ok": True}
 
 
 @router.get("/internal/dashboard/escalations")
