@@ -222,6 +222,9 @@ Reusable onboarding and cleanup commands:
 Product and engineering backlog:
 [BACKLOG.md](BACKLOG.md)
 
+Lightweight implementation process:
+[IMPLEMENTATION_PIPELINE.md](IMPLEMENTATION_PIPELINE.md)
+
 DB reset helper:
 - `scripts/reset_db.sh` (safe review mode by default; use `--apply` to execute)
 
