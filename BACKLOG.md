@@ -156,7 +156,47 @@ Acceptance criteria:
 - Dashboard rendering and gateway commands check the same scope model.
 - Changing a link's scopes invalidates old authorization tokens where relevant.
 
-## 7. Better Help, Discovery, And Progressive Guidance
+## 7. Care-Dash Care Plan Editing For Authorized Caregivers
+
+Status: proposed
+Priority: high
+
+Problem:
+The caregiver dashboard is currently a read-only summary surface. That is useful for visibility, but it stops short of the more important operational workflow: an authorized caregiver should be able to adjust the care plan from the dashboard when they are actively managing the patient's day-to-day care. Right now, caregivers can trigger some changes via WhatsApp, but the dashboard itself does not serve as an editing surface.
+
+Desired behavior:
+- A caregiver with edit permissions can open Care-Dash and update care-plan items directly.
+- Supported edit operations should include at least:
+  - add a new care-plan item
+  - edit an existing item
+  - reschedule an item
+  - mark one-off items completed or skipped
+  - adjust reminder timing windows
+- Observer caregivers should continue to see a read-only dashboard.
+- Primary caregivers should see editing controls only where they have the required scopes.
+
+Design notes:
+- Care-Dash should remain presentation-first, but it should be able to submit authorized edit intents through CareOS rather than becoming its own source of truth.
+- Reuse the same scope model already introduced for caregiver presets:
+  - read scopes
+  - write scopes
+- Care plan editing from the dashboard should follow the same execution semantics as the gateway planner where possible:
+  - definition-aware edits for recurring items
+  - instance-aware overrides for one-off or occurrence-level changes
+- All mutations should be auditable and should increment authorization-sensitive state where applicable.
+- The dashboard should make it obvious whether the user is editing:
+  - a recurring definition
+  - a single occurrence
+  - a one-off item
+
+Acceptance criteria:
+- Primary caregivers can edit care-plan items from Care-Dash.
+- Observer caregivers cannot see or use editing controls.
+- Dashboard mutations flow through CareOS APIs and are reflected in the next dashboard refresh.
+- Recurring edits and one-off overrides behave consistently with the backend action model.
+- All care-plan edits are logged with actor, patient, timestamp, and mutation type.
+
+## 8. Better Help, Discovery, And Progressive Guidance
 
 Status: proposed
 Priority: medium
@@ -181,7 +221,7 @@ Acceptance criteria:
 - Users can discover major flows without reading a long single menu.
 - Command discovery improves after the first failed or ambiguous request.
 
-## 8. Daily Digest And Alert Tuning Controls
+## 9. Daily Digest And Alert Tuning Controls
 
 Status: proposed
 Priority: medium
@@ -204,7 +244,7 @@ Acceptance criteria:
 - Notification timing can be tuned without code changes.
 - Urgent alerts and informational digests follow different policies.
 
-## 9. GitHub Issue Sync For Backlog Items
+## 10. GitHub Issue Sync For Backlog Items
 
 Status: proposed
 Priority: low
