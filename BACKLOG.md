@@ -196,7 +196,54 @@ Acceptance criteria:
 - Recurring edits and one-off overrides behave consistently with the backend action model.
 - All care-plan edits are logged with actor, patient, timestamp, and mutation type.
 
-## 8. Better Help, Discovery, And Progressive Guidance
+## 8. WhatsApp Feedback Capture, Triage, And Product Classification
+
+Status: proposed
+Priority: high
+
+Problem:
+Users currently express product feedback, confusion, missing capabilities, and failures directly in WhatsApp, but the system does not capture those messages as structured product signals. Valuable feedback is easy to lose, and there is no built-in mechanism to classify whether an inbound complaint or suggestion is:
+- a product bug
+- a missing feature
+- a usability/discovery issue
+- a data-quality issue
+- a workflow/training issue
+
+Desired behavior:
+- A user can send feedback directly in WhatsApp using natural language or an explicit command such as `feedback`.
+- The system captures the feedback event with:
+  - actor
+  - role
+  - patient context
+  - original message
+  - timestamp
+  - recent conversational context
+- The system triages the feedback into a preliminary product category:
+  - bug
+  - feature request
+  - UX/discoverability issue
+  - data/config issue
+  - unknown/needs review
+- The system stores a rationale for the classification so a product or engineering team can review it later.
+- The system should support escalation into a durable backlog or issue-creation workflow.
+
+Design notes:
+- Keep raw user text as the source record; classification should be additive, not destructive.
+- The triage step should preserve uncertainty. It should be able to say `likely bug` or `needs review`, not force false precision.
+- Include surrounding conversational context so short messages like `this is wrong` or `it didn't work` can still be understood during review.
+- Make this usable for both:
+  - explicit feedback messages
+  - passive feedback detection from frustration phrases during normal conversation
+- Long term, this should integrate with the backlog and GitHub issue flow, but the first slice should focus on capture and classification.
+
+Acceptance criteria:
+- Feedback messages can be submitted from WhatsApp and stored durably.
+- Each feedback item includes actor, patient context, raw text, and triage classification.
+- Classification includes a rationale and a confidence score or review-needed flag.
+- Teams can list recent feedback items and filter by category.
+- High-confidence feature requests and bugs can later be promoted into backlog items or GitHub issues.
+
+## 9. Better Help, Discovery, And Progressive Guidance
 
 Status: proposed
 Priority: medium
@@ -221,7 +268,7 @@ Acceptance criteria:
 - Users can discover major flows without reading a long single menu.
 - Command discovery improves after the first failed or ambiguous request.
 
-## 9. Daily Digest And Alert Tuning Controls
+## 10. Daily Digest And Alert Tuning Controls
 
 Status: proposed
 Priority: medium
@@ -244,7 +291,7 @@ Acceptance criteria:
 - Notification timing can be tuned without code changes.
 - Urgent alerts and informational digests follow different policies.
 
-## 10. GitHub Issue Sync For Backlog Items
+## 11. GitHub Issue Sync For Backlog Items
 
 Status: proposed
 Priority: low
