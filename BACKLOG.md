@@ -2,6 +2,72 @@
 
 This backlog is intended to be descriptive enough for architects and engineers to implement from, not just a title list. Each item captures the user problem, the desired behavior, the main design implications, and a concrete acceptance target.
 
+## Ranking View
+
+This section ranks backlog items by a combined view of:
+- user/product impact
+- implementation complexity
+- verification and testing complexity
+
+Lower rank number means a better near-term tradeoff, not necessarily the easiest item in isolation.
+
+1. Patient-Initiated Caregiver Invites
+   - Impact: very high
+   - Implementation/test complexity: medium-high
+   - Why: directly unlocks multi-caregiver adoption and matches the intended care-circle workflow.
+2. Persistent Reminder Context For Reply-Based Actions
+   - Impact: very high
+   - Implementation/test complexity: medium
+   - Why: converts reminder replies from inference-based to exact, which reduces dangerous ambiguity.
+3. WhatsApp Feedback Capture, Triage, And Product Classification
+   - Impact: high
+   - Implementation/test complexity: medium
+   - Why: creates a durable signal pipeline for bugs, feature requests, and UX failures directly from live usage.
+4. Care-Dash Care Plan Editing For Authorized Caregivers
+   - Impact: very high
+   - Implementation/test complexity: high
+   - Why: turns the dashboard into an operational tool instead of a read-only report.
+5. Dashboard-Side Caregiver Management
+   - Impact: high
+   - Implementation/test complexity: medium
+   - Why: makes caregiver invites, preset changes, and link visibility manageable from the web surface.
+6. Historical Backlog Completion Across Past Days
+   - Impact: medium-high
+   - Implementation/test complexity: medium
+   - Why: addresses real operational cleanup needs after missed days without overloading current-day commands.
+7. Caregiver Notification Preferences UI And Commands
+   - Impact: medium-high
+   - Implementation/test complexity: medium
+   - Why: improves signal quality and reduces notification fatigue for larger care circles.
+8. Patient/Caregiver Activity Timeline And Audit Trail
+   - Impact: medium-high
+   - Implementation/test complexity: medium
+   - Why: improves trust, reviewability, and supportability across both clinical and caregiver workflows.
+9. Better Help, Discovery, And Progressive Guidance
+   - Impact: medium
+   - Implementation/test complexity: low-medium
+   - Why: lowers friction and reduces support burden, but does not change core care execution semantics.
+10. Daily Digest And Alert Tuning Controls
+   - Impact: medium
+   - Implementation/test complexity: medium
+   - Why: improves notification quality once the base signal model is stable.
+11. Candidate Scoring For Ambiguous Natural-Language Updates
+   - Impact: medium
+   - Implementation/test complexity: medium-high
+   - Why: improves planner precision, but current clarification already reduces the riskiest failures.
+12. Conversational Clarification Memory
+   - Impact: medium
+   - Implementation/test complexity: high
+   - Why: valuable for natural dialogue, but state-handling and ambiguity testing are non-trivial.
+13. Read/Write Policy Separation For Caregiver Personas
+   - Impact: medium-high
+   - Implementation/test complexity: high
+   - Why: important foundation for growth, but it is partly architectural hardening rather than immediately user-visible.
+14. GitHub Issue Sync And Feedback Promotion Automation
+   - Impact: medium-low
+   - Implementation/test complexity: medium
+   - Why: useful after feedback capture exists, but not the first operational bottleneck.
+
 ## 1. Patient-Initiated Caregiver Invites
 
 Status: proposed
@@ -291,22 +357,108 @@ Acceptance criteria:
 - Notification timing can be tuned without code changes.
 - Urgent alerts and informational digests follow different policies.
 
-## 11. GitHub Issue Sync For Backlog Items
+## 11. GitHub Issue Sync And Feedback Promotion Automation
 
 Status: proposed
 Priority: low
 
 Problem:
-A Markdown backlog in the repo is durable and reviewable, but it is not yet synchronized with GitHub issues or project boards.
+A Markdown backlog in the repo is durable and reviewable, but it is not yet synchronized with GitHub issues or project boards. Now that WhatsApp-native feedback capture is also on the backlog, there is also no automated or semi-automated path to promote classified feedback into issues or backlog candidates.
 
 Desired behavior:
 - Important backlog items can be promoted into GitHub issues with labels and status.
+- High-confidence feedback items can be promoted into GitHub issues or backlog candidates.
 - The repo should remain the source of feature descriptions, while issues track execution.
 
 Design notes:
 - Keep `BACKLOG.md` as the descriptive source.
 - Use issues for owner, milestone, and implementation status tracking.
+- Preserve a human review step for high-risk or ambiguous feedback classification before issue creation.
 
 Acceptance criteria:
 - High-priority backlog items are mirrored into GitHub issues.
+- High-confidence bug and feature feedback can be promoted into issues with traceable source context.
 - The Markdown backlog and issues reference each other cleanly.
+
+## 12. Dashboard-Side Caregiver Management
+
+Status: proposed
+Priority: medium-high
+
+Problem:
+Caregiver presets and caregiver link management now exist in the backend and WhatsApp gateway, but there is no equivalent management surface in Care-Dash. A primary caregiver or patient operator should not have to rely only on WhatsApp commands to inspect or manage the care circle.
+
+Desired behavior:
+- Care-Dash shows the current caregivers linked to the patient.
+- Authorized users can:
+  - view caregiver presets
+  - change `primary_caregiver` vs `observer`
+  - view notification preferences
+  - remove or deactivate a caregiver link
+  - trigger a new caregiver invite flow
+
+Design notes:
+- Reuse the same caregiver link metadata and authorization model already implemented in CareOS.
+- Keep observer-facing dashboards read-only.
+- Separate the concepts of:
+  - invite pending
+  - active caregiver
+  - revoked caregiver
+
+Acceptance criteria:
+- Care-Dash displays the patient care circle.
+- Authorized users can update caregiver preset and link state from the dashboard.
+- Dashboard changes flow through CareOS APIs and preserve auditability.
+
+## 13. Patient/Caregiver Activity Timeline And Audit Trail
+
+Status: proposed
+Priority: medium
+
+Problem:
+As more actions become possible through WhatsApp, Care-Dash, scheduler automation, and MCP-mediated workflows, it becomes harder to answer basic operational questions such as who changed what, when, and why. That reduces trust and makes debugging and support harder.
+
+Desired behavior:
+- Provide a unified activity timeline for patient and caregiver actions.
+- Include:
+  - reminders sent
+  - replies received
+  - task completions
+  - skips/delays
+  - care-plan edits
+  - caregiver link changes
+  - authorization or preset changes
+- Make the timeline viewable in internal tooling first, then optionally in Care-Dash.
+
+Design notes:
+- Reuse message events, audit logs, and planner execution artifacts where possible.
+- Include actor, channel, timestamp, patient context, and action classification.
+- Preserve enough detail to reconstruct why a task changed state.
+
+Acceptance criteria:
+- Operators can query recent activity for a patient.
+- Care-plan edits and caregiver-management actions are visible in the audit trail.
+- Logs are structured enough to support both debugging and user-facing history later.
+
+## 14. Conversational Clarification Memory
+
+Status: proposed
+Priority: medium
+
+Problem:
+The planner can now return useful clarification prompts, but the follow-up memory is still shallow. Requests like `the second one`, `move that one`, or `yes, the evening dose` should resolve against the immediately preceding clarification exchange rather than being treated as fresh standalone messages.
+
+Desired behavior:
+- The system retains short-lived clarification context.
+- Follow-up replies can bind to the candidates shown in the previous clarification prompt.
+- The memory should expire automatically and remain scoped to the active patient context.
+
+Design notes:
+- Keep the memory bounded and auditable.
+- Do not reuse stale clarification state after a significant context switch.
+- Planner and pending-action storage should remain separate from clarification-memory storage, even if both are short-lived.
+
+Acceptance criteria:
+- Follow-up replies like `the second one` resolve correctly after an ambiguity prompt.
+- Clarification state expires safely.
+- Context switches do not leak clarification bindings across patients.
