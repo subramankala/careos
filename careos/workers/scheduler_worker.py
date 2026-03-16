@@ -10,7 +10,8 @@ from careos.db.connection import get_connection
 from careos.db.repositories.store import InMemoryStore, PostgresStore
 from careos.domain.enums.core import PersonaType
 from careos.domain.enums.core import WinState
-from careos.integrations.twilio.sender import TwilioWhatsAppSender
+from careos.integrations.twilio.sender import TwilioVoiceSender, TwilioWhatsAppSender
+from careos.integrations.twilio.twiml import voice_response
 from careos.logging import configure_logging, get_logger
 from careos.settings import settings
 
@@ -36,8 +37,6 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
             participant = store.participants.get(str(link["caregiver_participant_id"]))
             if not participant or not participant.get("active", False):
                 continue
-            if str(participant.get("role", "")) != "caregiver":
-                continue
             phone = str(participant.get("phone_number", "")).strip()
             if not phone:
                 continue
@@ -48,6 +47,7 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
                 {
                     "participant_id": str(participant["id"]),
                     "phone_number": phone,
+                    "role": str(participant.get("role", "")),
                     "link": store.get_caregiver_link(str(participant["id"]), patient_id) or {},
                 }
             )
@@ -56,12 +56,11 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
 
     if isinstance(store, PostgresStore):
         sql = """
-        SELECT p.id, p.phone_number, cpl.relationship, cpl.notification_policy, cpl.can_edit_plan
+        SELECT p.id, p.phone_number, p.role, cpl.relationship, cpl.notification_policy, cpl.can_edit_plan
         FROM caregiver_patient_links cpl
         JOIN participants p ON p.id = cpl.caregiver_participant_id
         WHERE cpl.patient_id = %s
           AND p.active = true
-          AND p.role = 'caregiver'
         """
         with get_connection(store.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (patient_id,))
@@ -73,9 +72,9 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
                 link = {
                     "caregiver_participant_id": str(row[0]),
                     "patient_id": patient_id,
-                    "relationship": row[2],
-                    "notification_policy": row[3] or {},
-                    "can_edit_plan": bool(row[4]),
+                    "relationship": row[3],
+                    "notification_policy": row[4] or {},
+                    "can_edit_plan": bool(row[5]),
                 }
                 from careos.db.repositories.store import caregiver_link_metadata
 
@@ -84,6 +83,7 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
                     {
                         "participant_id": str(row[0]),
                         "phone_number": str(row[1]),
+                        "role": str(row[2]),
                         "link": link,
                     }
                 )
@@ -92,7 +92,7 @@ def _recipient_endpoints(patient_id: str) -> list[dict]:
     return []
 
 
-def _notification_allowed(link: dict, notification_kind: str) -> bool:
+def _notification_channels(link: dict, notification_kind: str) -> set[str]:
     preferences = dict((link.get("link") or {}).get("notification_preferences") or {})
     mapping = {
         "due_reminders": "due_reminders",
@@ -101,7 +101,32 @@ def _notification_allowed(link: dict, notification_kind: str) -> bool:
         "low_adherence_alerts": "low_adherence_alerts",
     }
     key = mapping[notification_kind]
-    return bool(preferences.get(key, False))
+    preference = preferences.get(key, False)
+    if isinstance(preference, bool):
+        return {"whatsapp"} if preference else set()
+    if isinstance(preference, str):
+        raw_channel = preference
+    elif isinstance(preference, dict):
+        if not bool(preference.get("enabled", True)):
+            return set()
+        raw_channel = str(preference.get("channel", "whatsapp"))
+    else:
+        return set()
+    normalized = raw_channel.strip().lower().replace("text", "whatsapp")
+    if normalized in {"", "off", "disabled", "none"}:
+        return set()
+    if normalized in {"both", "voice_and_whatsapp", "whatsapp_and_voice"}:
+        return {"whatsapp", "voice"}
+    if normalized in {"whatsapp", "voice"}:
+        return {normalized}
+    return {"whatsapp"}
+
+
+def _recipient_allows_notification(recipient: dict, notification_kind: str) -> bool:
+    role = str(recipient.get("role", "")).strip().lower()
+    if notification_kind == "due_reminders":
+        return role in {"patient", "caregiver"}
+    return role == "caregiver"
 
 
 def _build_sender() -> TwilioWhatsAppSender | None:
@@ -121,6 +146,39 @@ def _build_sender() -> TwilioWhatsAppSender | None:
         return None
 
 
+def _build_voice_sender() -> TwilioVoiceSender | None:
+    if not settings.enable_scheduler_voice_calls:
+        return None
+    if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.voice_caller_id:
+        logger.warning("scheduler_voice_disabled_missing_twilio_config")
+        return None
+    try:
+        return TwilioVoiceSender(
+            account_sid=settings.twilio_account_sid,
+            auth_token=settings.twilio_auth_token,
+            from_number=settings.voice_caller_id,
+        )
+    except ValueError:
+        logger.warning("scheduler_voice_disabled_invalid_twilio_config")
+        return None
+
+
+def _voice_body_for_notification(*, message_type: str, body: str, title: str | None = None, category: str | None = None) -> str:
+    if message_type == "scheduled_reminder":
+        if str(category or "").strip().lower() == "medication":
+            label = str(title or "your medication").strip() or "your medication"
+            return (
+                "This is CareOS. It is time for "
+                f"{label}. After taking it, reply Taken on WhatsApp. "
+                "If you took multiple medicines, reply done all meds on WhatsApp."
+            )
+        label = str(title or "your task").strip() or "your task"
+        return f"This is CareOS. Reminder: {label} is due now. Please confirm on WhatsApp once completed."
+    if message_type == "critical_missed_status_alert":
+        return f"This is CareOS. {body} Please check WhatsApp for details."
+    return f"This is CareOS. {body}"
+
+
 def _send_scheduler_message(
     *,
     tenant_id: str,
@@ -129,9 +187,11 @@ def _send_scheduler_message(
     phone_number: str,
     body: str,
     message_type: str,
+    channel: str,
     correlation_id: str,
     idempotency_key: str,
-    sender: TwilioWhatsAppSender | None,
+    whatsapp_sender: TwilioWhatsAppSender | None,
+    voice_sender: TwilioVoiceSender | None,
     extra_payload: dict | None = None,
 ) -> bool:
     inserted = context.store.log_message_event(
@@ -139,27 +199,28 @@ def _send_scheduler_message(
         patient_id=patient_id,
         participant_id=participant_id,
         direction="outbound",
-        channel="whatsapp",
+        channel=channel,
         message_type=message_type,
         body=body,
         correlation_id=correlation_id,
         idempotency_key=idempotency_key,
         payload={
             "to": phone_number,
-            "push_enabled": sender is not None,
+            "push_enabled": (whatsapp_sender if channel == "whatsapp" else voice_sender) is not None,
             **(extra_payload or {}),
         },
     )
     if not inserted:
         return False
-    if sender is not None:
+    if channel == "whatsapp" and whatsapp_sender is not None:
         try:
-            sid = sender.send_text(to_number=phone_number, body=body)
+            sid = whatsapp_sender.send_text(to_number=phone_number, body=body)
             logger.info(
                 "scheduler_push_sent",
                 patient_id=patient_id,
                 participant_id=participant_id,
                 message_type=message_type,
+                channel=channel,
                 twilio_message_sid=sid,
             )
         except Exception:
@@ -168,6 +229,33 @@ def _send_scheduler_message(
                 patient_id=patient_id,
                 participant_id=participant_id,
                 message_type=message_type,
+                channel=channel,
+            )
+    if channel == "voice" and voice_sender is not None:
+        try:
+            sid = voice_sender.place_call(
+                to_number=phone_number,
+                twiml=voice_response(
+                    body,
+                    voice=settings.scheduler_voice_name,
+                    language=settings.scheduler_voice_language,
+                ),
+            )
+            logger.info(
+                "scheduler_voice_sent",
+                patient_id=patient_id,
+                participant_id=participant_id,
+                message_type=message_type,
+                channel=channel,
+                twilio_call_sid=sid,
+            )
+        except Exception:
+            logger.exception(
+                "scheduler_voice_failed",
+                patient_id=patient_id,
+                participant_id=participant_id,
+                message_type=message_type,
+                channel=channel,
             )
     return True
 
@@ -253,7 +341,8 @@ def _status_alerts(patient_id: str, evaluated_at: datetime, timeline: list) -> l
 def run_once(now: datetime | None = None) -> int:
     patients = _patient_ids()
     evaluated_at = now or datetime.now(UTC)
-    sender = _build_sender()
+    whatsapp_sender = _build_sender()
+    voice_sender = _build_voice_sender()
     sent = 0
     for patient_id in patients:
         profile = context.store.get_patient_profile(patient_id) or {}
@@ -281,34 +370,52 @@ def run_once(now: datetime | None = None) -> int:
                     logger.warning("scheduler_no_recipients", patient_id=patient_id, win_instance_id=item.win_instance_id)
                     continue
                 for recipient in recipients:
-                    if not _notification_allowed(recipient, "due_reminders"):
+                    if not _recipient_allows_notification(recipient, "due_reminders"):
+                        continue
+                    channels = _notification_channels(recipient, "due_reminders")
+                    if not channels:
                         continue
                     participant_id = str(recipient["participant_id"])
                     phone_number = str(recipient["phone_number"])
                     message_body = f"Reminder: {item.title} is due now. Reply 'Taken' once completed."
-                    idempotency_key = (
-                        f"sched:{item.win_instance_id}:{item.scheduled_start.isoformat()}:due_v1:{participant_id}"
-                    )
-                    delivered = _send_scheduler_message(
-                        tenant_id=tenant_id,
-                        patient_id=patient_id,
-                        participant_id=participant_id,
-                        phone_number=phone_number,
-                        body=message_body,
+                    voice_body = _voice_body_for_notification(
                         message_type="scheduled_reminder",
-                        correlation_id=f"sched:{patient_id}:{item.win_instance_id}:{participant_id}",
-                        idempotency_key=idempotency_key,
-                        sender=sender if decision.channel == "whatsapp" else None,
-                        extra_payload={
-                            "tone": decision.tone,
-                            "event_policy": normalized_policy.as_payload(),
-                            "win_instance_id": str(item.win_instance_id),
-                            "title": str(item.title),
-                            "scheduled_start": item.scheduled_start.isoformat(),
-                        },
+                        body=message_body,
+                        title=str(item.title),
+                        category=str(item.category),
                     )
-                    if delivered:
-                        sent += 1
+                    for channel in sorted(channels):
+                        if channel == "voice" and voice_sender is None:
+                            if whatsapp_sender is None:
+                                continue
+                            channel = "whatsapp"
+                        if channel == "whatsapp" and decision.channel != "whatsapp" and voice_sender is not None:
+                            continue
+                        delivered = _send_scheduler_message(
+                            tenant_id=tenant_id,
+                            patient_id=patient_id,
+                            participant_id=participant_id,
+                            phone_number=phone_number,
+                            body=voice_body if channel == "voice" else message_body,
+                            message_type="scheduled_reminder",
+                            channel=channel,
+                            correlation_id=f"sched:{patient_id}:{item.win_instance_id}:{participant_id}:{channel}",
+                            idempotency_key=(
+                                f"sched:{item.win_instance_id}:{item.scheduled_start.isoformat()}:due_v1:{participant_id}:{channel}"
+                            ),
+                            whatsapp_sender=whatsapp_sender if channel == "whatsapp" else None,
+                            voice_sender=voice_sender if channel == "voice" else None,
+                            extra_payload={
+                                "tone": decision.tone,
+                                "event_policy": normalized_policy.as_payload(),
+                                "win_instance_id": str(item.win_instance_id),
+                                "title": str(item.title),
+                                "scheduled_start": item.scheduled_start.isoformat(),
+                                "category": str(item.category),
+                            },
+                        )
+                        if delivered:
+                            sent += 1
         recipients = _recipient_endpoints(patient_id)
         if recipients:
             for message_type, message_body, payload in _status_alerts(patient_id, evaluated_at, timeline):
@@ -320,24 +427,42 @@ def run_once(now: datetime | None = None) -> int:
                     else "low_adherence_alerts"
                 )
                 for recipient in recipients:
-                    if not _notification_allowed(recipient, notification_kind):
+                    if not _recipient_allows_notification(recipient, notification_kind):
+                        continue
+                    channels = _notification_channels(recipient, notification_kind)
+                    if not channels:
                         continue
                     participant_id = str(recipient["participant_id"])
                     phone_number = str(recipient["phone_number"])
-                    delivered = _send_scheduler_message(
-                        tenant_id=tenant_id,
-                        patient_id=patient_id,
-                        participant_id=participant_id,
-                        phone_number=phone_number,
-                        body=message_body,
+                    voice_body = _voice_body_for_notification(
                         message_type=message_type,
-                        correlation_id=f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}",
-                        idempotency_key=f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}",
-                        sender=sender,
-                        extra_payload=payload,
+                        body=message_body,
                     )
-                    if delivered:
-                        sent += 1
+                    for channel in sorted(channels):
+                        if channel == "voice" and voice_sender is None:
+                            if whatsapp_sender is None:
+                                continue
+                            channel = "whatsapp"
+                        delivered = _send_scheduler_message(
+                            tenant_id=tenant_id,
+                            patient_id=patient_id,
+                            participant_id=participant_id,
+                            phone_number=phone_number,
+                            body=voice_body if channel == "voice" else message_body,
+                            message_type=message_type,
+                            channel=channel,
+                            correlation_id=(
+                                f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}:{channel}"
+                            ),
+                            idempotency_key=(
+                                f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}:{channel}"
+                            ),
+                            whatsapp_sender=whatsapp_sender if channel == "whatsapp" else None,
+                            voice_sender=voice_sender if channel == "voice" else None,
+                            extra_payload=payload,
+                        )
+                        if delivered:
+                            sent += 1
     return sent
 
 

@@ -59,3 +59,25 @@ def test_internal_caregiver_preset_update_requires_primary_actor(monkeypatch) ->
 
     assert result["preset"] == "primary_caregiver"
     assert result["authorization_version"] == 2
+
+
+def test_internal_notification_preferences_update_allows_voice_channel(monkeypatch) -> None:
+    store, patient_id, primary_id, observer_id = _seed_store()
+    monkeypatch.setattr(internal, "context", SimpleNamespace(store=store))
+
+    payload = internal.CaregiverNotificationPreferencesUpdateRequest(
+        actor_id=primary_id,
+        patient_id=patient_id,
+        caregiver_participant_id=observer_id,
+        notification_preferences={
+            "due_reminders": {"channel": "voice"},
+            "critical_alerts": {"channel": "both"},
+            "daily_summary": False,
+            "low_adherence_alerts": True,
+        },
+    )
+    result = internal.update_caregiver_link_notification_preferences(payload)
+
+    assert result["notification_preferences"]["due_reminders"] == {"channel": "voice"}
+    assert result["notification_preferences"]["critical_alerts"] == {"channel": "both"}
+    assert result["authorization_version"] == 2

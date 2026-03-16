@@ -29,6 +29,15 @@ class _Sender:
         return "SM_TEST"
 
 
+class _VoiceSender:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def place_call(self, *, to_number: str, twiml: str) -> str:
+        self.calls.append((to_number, twiml))
+        return "CA_TEST"
+
+
 def test_scheduler_push_sends_once_and_is_idempotent(monkeypatch) -> None:
     store = InMemoryStore()
     patient_id = "patient-1"
@@ -311,3 +320,115 @@ def test_scheduler_observer_does_not_receive_due_reminders(monkeypatch) -> None:
 
     assert sent == 0
     assert sender.calls == []
+
+
+def test_scheduler_patient_self_link_can_receive_voice_due_reminder(monkeypatch) -> None:
+    store = InMemoryStore()
+    patient_id = "patient-1"
+    participant_id = "participant-1"
+    store.participants[participant_id] = {
+        "id": participant_id,
+        "tenant_id": "tenant-1",
+        "role": "patient",
+        "display_name": "Patient",
+        "phone_number": "+15550001111",
+        "active": True,
+    }
+    store.link_caregiver(
+        participant_id,
+        patient_id,
+        notification_preferences={"due_reminders": {"channel": "voice"}},
+    )
+
+    now = datetime(2026, 3, 14, 10, 0, tzinfo=UTC)
+    timeline = [
+        TimelineItem(
+            win_instance_id="win-1",
+            title="Ecosprin 75 mg",
+            category="medication",
+            criticality=Criticality.HIGH,
+            flexibility=Flexibility.RIGID,
+            scheduled_start=now - timedelta(minutes=1),
+            scheduled_end=now + timedelta(minutes=10),
+            current_state=WinState.DUE,
+        )
+    ]
+
+    monkeypatch.setattr(store, "get_patient_profile", lambda patient: {"tenant_id": "tenant-1", "persona_type": "caregiver_managed_elder", "timezone": "UTC"})
+    monkeypatch.setattr(store, "ensure_recurrence_instances", lambda patient, ts: 0)
+    monkeypatch.setattr(store, "list_today", lambda patient, ts: timeline)
+    monkeypatch.setattr(store, "status_counts", lambda patient, ts: {"completed": 0, "due": 1, "missed": 0, "skipped": 0})
+    monkeypatch.setattr(store, "adherence_summary", lambda patient, day: {"score": 100.0, "high_criticality_completion_rate": 100.0, "all_completion_rate": 100.0})
+
+    text_sender = _Sender()
+    voice_sender = _VoiceSender()
+    monkeypatch.setattr(scheduler_worker, "context", SimpleNamespace(store=store, policy_engine=_Policy()))
+    monkeypatch.setattr(scheduler_worker, "_patient_ids", lambda: [patient_id])
+    monkeypatch.setattr(scheduler_worker, "_build_sender", lambda: text_sender)
+    monkeypatch.setattr(scheduler_worker, "_build_voice_sender", lambda: voice_sender)
+
+    sent = scheduler_worker.run_once(now=now)
+
+    assert sent == 1
+    assert text_sender.calls == []
+    assert len(voice_sender.calls) == 1
+    assert voice_sender.calls[0][0] == "+15550001111"
+    assert "reply taken on whatsapp" in voice_sender.calls[0][1].lower()
+
+
+def test_scheduler_caregiver_critical_alert_can_use_voice_channel(monkeypatch) -> None:
+    store = InMemoryStore()
+    patient_id = "patient-1"
+    participant_id = "participant-1"
+    store.participants[participant_id] = {
+        "id": participant_id,
+        "tenant_id": "tenant-1",
+        "role": "caregiver",
+        "display_name": "Caregiver",
+        "phone_number": "+15550001111",
+        "active": True,
+    }
+    store.link_caregiver(
+        participant_id,
+        patient_id,
+        notification_preferences={
+            "due_reminders": True,
+            "critical_alerts": {"channel": "voice"},
+            "daily_summary": False,
+            "low_adherence_alerts": False,
+        },
+    )
+
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    timeline = [
+        TimelineItem(
+            win_instance_id="win-1",
+            title="Critical med",
+            category="medication",
+            criticality=Criticality.HIGH,
+            flexibility=Flexibility.RIGID,
+            scheduled_start=now - timedelta(hours=2),
+            scheduled_end=now - timedelta(hours=1, minutes=30),
+            current_state=WinState.MISSED,
+        )
+    ]
+
+    monkeypatch.setattr(store, "get_patient_profile", lambda patient: {"tenant_id": "tenant-1", "persona_type": "caregiver_managed_elder", "timezone": "UTC"})
+    monkeypatch.setattr(store, "ensure_recurrence_instances", lambda patient, ts: 0)
+    monkeypatch.setattr(store, "list_today", lambda patient, ts: timeline)
+    monkeypatch.setattr(store, "status_counts", lambda patient, ts: {"completed": 0, "due": 0, "missed": 1, "skipped": 0})
+    monkeypatch.setattr(store, "adherence_summary", lambda patient, day: {"score": 100.0, "high_criticality_completion_rate": 0.0, "all_completion_rate": 100.0})
+
+    text_sender = _Sender()
+    voice_sender = _VoiceSender()
+    monkeypatch.setattr(scheduler_worker, "context", SimpleNamespace(store=store, policy_engine=_Policy()))
+    monkeypatch.setattr(scheduler_worker, "_patient_ids", lambda: [patient_id])
+    monkeypatch.setattr(scheduler_worker, "_build_sender", lambda: text_sender)
+    monkeypatch.setattr(scheduler_worker, "_build_voice_sender", lambda: voice_sender)
+
+    sent = scheduler_worker.run_once(now=now)
+
+    assert sent == 1
+    assert text_sender.calls == []
+    assert len(voice_sender.calls) == 1
+    assert "check whatsapp for details" in voice_sender.calls[0][1].lower()

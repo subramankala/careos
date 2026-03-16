@@ -47,6 +47,13 @@ class CaregiverPresetUpdateRequest(BaseModel):
     preset: str
 
 
+class CaregiverNotificationPreferencesUpdateRequest(BaseModel):
+    actor_id: str
+    patient_id: str
+    caregiver_participant_id: str
+    notification_preferences: dict = Field(default_factory=dict)
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -227,6 +234,29 @@ def update_caregiver_link_preset(payload: CaregiverPresetUpdateRequest) -> dict:
         payload.caregiver_participant_id,
         payload.patient_id,
         payload.preset,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="caregiver link not found")
+    return {
+        "caregiver_participant_id": str(updated.get("caregiver_participant_id", "")),
+        "patient_id": str(updated.get("patient_id", "")),
+        "preset": str(updated.get("preset", "primary_caregiver")),
+        "scopes": list(updated.get("scopes", [])),
+        "notification_preferences": dict(updated.get("notification_preferences", {})),
+        "authorization_version": int(updated.get("authorization_version", 1) or 1),
+        "can_edit_plan": bool(updated.get("can_edit_plan", False)),
+    }
+
+
+@router.post("/internal/caregiver-links/notification-preferences")
+def update_caregiver_link_notification_preferences(payload: CaregiverNotificationPreferencesUpdateRequest) -> dict:
+    actor_link = context.store.get_caregiver_link(payload.actor_id, payload.patient_id)
+    if actor_link is None or not bool(actor_link.get("can_edit_plan", False)):
+        raise HTTPException(status_code=403, detail="actor is not allowed to manage caregiver notification preferences")
+    updated = context.store.update_caregiver_link_notification_preferences(
+        payload.caregiver_participant_id,
+        payload.patient_id,
+        payload.notification_preferences,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="caregiver link not found")

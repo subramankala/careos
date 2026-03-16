@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     scheduler_poll_seconds: int = 30
     scheduler_patient_ids: str = ""
     enable_scheduler_whatsapp_push: bool = False
+    enable_scheduler_voice_calls: bool = False
     enable_scheduler_status_alerts: bool = True
     scheduler_low_adherence_threshold: float = 50.0
     scheduler_critical_missed_grace_minutes: int = 30
@@ -52,6 +53,8 @@ class Settings(BaseSettings):
     twilio_whatsapp_number: str = ""
     enable_voice_escalation: bool = False
     voice_caller_id: str = ""
+    scheduler_voice_language: str = "en"
+    scheduler_voice_name: str = "alice"
     onboarding_session_ttl_hours: int = 24
     onboarding_verification_ttl_hours: int = 48
 

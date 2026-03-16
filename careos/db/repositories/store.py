@@ -168,6 +168,15 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def update_caregiver_link_notification_preferences(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        notification_preferences: dict,
+    ) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
         raise NotImplementedError
 
@@ -588,6 +597,31 @@ class InMemoryStore(Store):
                     "authorization_version": int(current.get("authorization_version", 1) or 1) + 1,
                 }
                 existing["can_edit_plan"] = bool(defaults["can_edit_plan"])
+                link = dict(existing)
+                link.update(caregiver_link_metadata(existing))
+                return link
+        return None
+
+    def update_caregiver_link_notification_preferences(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        notification_preferences: dict,
+    ) -> dict | None:
+        for existing in self.links:
+            if (
+                str(existing.get("caregiver_participant_id")) == str(caregiver_participant_id)
+                and str(existing.get("patient_id")) == str(patient_id)
+            ):
+                current_policy = dict(existing.get("notification_policy") or {})
+                current = caregiver_link_metadata(existing)
+                merged_policy = {
+                    "preset": str(current_policy.get("preset") or current.get("preset") or "primary_caregiver"),
+                    "scopes": list(current_policy.get("scopes") or current.get("scopes") or []),
+                    "notification_preferences": dict(notification_preferences or {}),
+                    "authorization_version": int(current.get("authorization_version", 1) or 1) + 1,
+                }
+                existing["notification_policy"] = merged_policy
                 link = dict(existing)
                 link.update(caregiver_link_metadata(existing))
                 return link
@@ -1608,6 +1642,44 @@ class PostgresStore(Store):
                 }
             ),
             "can_edit_plan": bool(defaults["can_edit_plan"]),
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            data.update(caregiver_link_metadata(data))
+            return data
+
+    def update_caregiver_link_notification_preferences(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        notification_preferences: dict,
+    ) -> dict | None:
+        current = self.get_caregiver_link(caregiver_participant_id, patient_id)
+        if current is None:
+            return None
+        current_policy = dict(current.get("notification_policy") or {})
+        sql = """
+        UPDATE caregiver_patient_links
+        SET notification_policy = %(notification_policy)s::jsonb
+        WHERE caregiver_participant_id = %(caregiver_participant_id)s
+          AND patient_id = %(patient_id)s
+        RETURNING id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan
+        """
+        params = {
+            "caregiver_participant_id": caregiver_participant_id,
+            "patient_id": patient_id,
+            "notification_policy": json.dumps(
+                {
+                    "preset": str(current_policy.get("preset") or current.get("preset") or "primary_caregiver"),
+                    "scopes": list(current_policy.get("scopes") or current.get("scopes") or []),
+                    "notification_preferences": dict(notification_preferences or {}),
+                    "authorization_version": int(current.get("authorization_version", 1) or 1) + 1,
+                }
+            ),
         }
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, params)
