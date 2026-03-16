@@ -20,7 +20,11 @@ class DeterministicRouter(ConversationEngine):
                 action="help",
                 text=(
                     "Commands: schedule, next, status, whoami, patients, switch, use <n>, "
-                    "done <item_no|win_id>, delay <item_no|win_id> <minutes>, skip <item_no|win_id>"
+                    "dashboard, caregivers, set caregiver <phone> as observer|primary, "
+                    "invite caregiver, pending invites, cancel invite <code>, "
+                    "add a medication, add an appointment, add a routine, "
+                    "restart setup, cancel setup, register me as patient, cancel onboarding, restart onboarding, "
+                    "done <item_no|win_id> [more items...], delay <item_no|win_id> <minutes>, skip <item_no|win_id>"
                 ),
             )
 
@@ -72,12 +76,22 @@ class DeterministicRouter(ConversationEngine):
             )
 
         if command.startswith("done "):
-            ref = raw.split(maxsplit=1)[1].strip()
-            win_id, error = self._resolve_win_reference(context, ref)
-            if win_id is None:
-                return CommandResult(action="done", text=error or "Unknown win reference.")
-            self.win_service.complete(win_id, context.participant_id)
-            return CommandResult(action="done", text=f"Marked {ref} as completed.")
+            refs = self._parse_done_references(raw.split(maxsplit=1)[1])
+            if not refs:
+                return CommandResult(action="done", text="Use: done <item_no|win_id> [more items...]")
+            completed: list[str] = []
+            for ref in refs:
+                win_id, error = self._resolve_win_reference(context, ref)
+                if win_id is None:
+                    return CommandResult(
+                        action="done",
+                        text=(error or "Unknown win reference.") if not completed else f"Stopped after marking {', '.join(completed)}. {error or 'Unknown win reference.'}",
+                    )
+                self.win_service.complete(win_id, context.participant_id)
+                completed.append(ref)
+            if len(completed) == 1:
+                return CommandResult(action="done", text=f"Marked {completed[0]} as completed.")
+            return CommandResult(action="done", text=f"Marked {', '.join(completed)} as completed.")
 
         if command.startswith("skip "):
             ref = raw.split(maxsplit=1)[1].strip()
@@ -101,7 +115,10 @@ class DeterministicRouter(ConversationEngine):
 
         return CommandResult(
             action="fallback",
-            text="I can handle: schedule, next, status, whoami, patients, switch, use, done, delay, skip, help.",
+            text=(
+                "I can handle: schedule, next, status, whoami, patients, switch, use, dashboard, caregivers, "
+                "invite management, setup shortcuts, onboarding controls, done, delay, skip, help."
+            ),
         )
 
     def _resolve_win_reference(self, context: ParticipantContext, reference: str) -> tuple[str | None, str | None]:
@@ -121,3 +138,12 @@ class DeterministicRouter(ConversationEngine):
         if len(reference) >= 8:
             return reference, None
         return None, "Could not find that task. Send 'schedule' and use the item number."
+
+    def _parse_done_references(self, value: str) -> list[str]:
+        ignored = {"and", "&", "then"}
+        tokens = [
+            token.strip()
+            for token in value.replace(",", " ").split()
+            if token.strip() and token.strip().lower() not in ignored
+        ]
+        return tokens

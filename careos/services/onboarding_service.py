@@ -25,6 +25,65 @@ class OnboardingService:
     def __init__(self, store: Store) -> None:
         self.store = store
 
+    def _is_existing_user_onboarding_trigger(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {
+            "register as patient",
+            "register me as patient",
+            "onboard myself",
+            "register myself",
+        }
+
+    def _is_patient_invite_trigger(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {
+            "invite caregiver",
+            "add caregiver",
+            "invite observer",
+            "add observer",
+            "invite an observer",
+            "add an observer",
+        }
+
+    def _is_patient_invite_list_trigger(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {
+            "invites",
+            "invite status",
+            "pending invites",
+            "list invites",
+            "show invites",
+        }
+
+    def _parse_patient_invite_cancel_command(self, body: str) -> str | None:
+        normalized = " ".join(body.strip().split())
+        lowered = normalized.lower()
+        prefixes = (
+            "cancel invite",
+            "cancel caregiver invite",
+            "cancel pending invite",
+        )
+        for prefix in prefixes:
+            if lowered == prefix:
+                return ""
+            if lowered.startswith(prefix + " "):
+                return normalized[len(prefix) :].strip()
+        return None
+
+    def _caregiver_preset_for_relationship(self, relationship: str) -> str:
+        normalized = " ".join(str(relationship).strip().lower().split())
+        if normalized in {"observer", "updates only", "family observer", "observer only"}:
+            return "observer"
+        return "primary_caregiver"
+
+    def _is_onboarding_cancel_command(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {"cancel onboarding", "exit onboarding", "stop onboarding"}
+
+    def _is_onboarding_restart_command(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {"restart onboarding", "start onboarding again"}
+
     def maybe_handle_message(
         self,
         *,
@@ -34,11 +93,55 @@ class OnboardingService:
         linked_patient_count: int,
     ) -> str | None:
         session = self.store.get_onboarding_session(sender_phone)
+        normalized = body.strip().lower()
+
+        if identity is not None and linked_patient_count > 0 and session is not None and session.status == "active":
+            if self._is_onboarding_cancel_command(body):
+                self._save_session(
+                    sender_phone,
+                    state="completed",
+                    status="completed",
+                    data=dict(session.data),
+                    completion_note="onboarding_cancelled_by_existing_user",
+                )
+                return "Okay, I closed onboarding. Reply 'help' for commands."
+            if self._is_onboarding_restart_command(body):
+                self._save_session(
+                    sender_phone,
+                    state="choose_role",
+                    status="active",
+                    data={"existing_user": True},
+                    completion_note="",
+                )
+                return "Restarting onboarding.\n" + self._role_prompt()
+            invite_target = self._resolve_existing_user_patient_target(identity)
+            if invite_target is not None:
+                invite_management = self._handle_existing_user_invite_management(
+                    sender_phone=sender_phone,
+                    body=body,
+                    invite_target=invite_target,
+                )
+                if invite_management is not None:
+                    return invite_management
 
         # Phase C continuation: keep lightweight setup wizard active after onboarding/approval.
         if session is not None and session.status == "active" and session.state.startswith("setup_"):
             if identity is None:
                 return "Could not resolve setup context. Reply 'hi' to restart onboarding."
+            if linked_patient_count > 0 and self._is_patient_invite_trigger(body):
+                invite_target = self._resolve_existing_user_patient_target(identity)
+                if invite_target is None:
+                    return "Could not resolve which patient this invite should apply to. Reply 'patients' first."
+                self._save_session(
+                    sender_phone,
+                    state="patient_invite_caregiver_phone",
+                    status="active",
+                    data=invite_target,
+                )
+                return (
+                    f"Inviting a caregiver for {invite_target['invite_patient_name']}. "
+                    "Reply with caregiver WhatsApp number (+countrycode)."
+                )
             return self._handle_setup_message(sender_phone=sender_phone, body=body, identity=identity, session_data=dict(session.data))
 
         verification_reply = self._handle_verification_message(sender_phone=sender_phone, body=body)
@@ -46,7 +149,34 @@ class OnboardingService:
             return verification_reply
 
         if identity is not None and linked_patient_count > 0:
-            return None
+            if session is not None and session.status == "active":
+                pass
+            else:
+                invite_target = self._resolve_existing_user_patient_target(identity)
+                if invite_target is None:
+                    return "Could not resolve which patient this invite should apply to. Reply 'patients' first."
+                invite_management = self._handle_existing_user_invite_management(
+                    sender_phone=sender_phone,
+                    body=body,
+                    invite_target=invite_target,
+                )
+                if invite_management is not None:
+                    return invite_management
+                if self._is_patient_invite_trigger(body):
+                    self._save_session(
+                        sender_phone,
+                        state="patient_invite_caregiver_phone",
+                        status="active",
+                        data=invite_target,
+                    )
+                    return (
+                        f"Inviting a caregiver for {invite_target['invite_patient_name']}. "
+                        "Reply with caregiver WhatsApp number (+countrycode)."
+                    )
+                if self._is_existing_user_onboarding_trigger(body):
+                    self._save_session(sender_phone, state="choose_role", status="active", data={"existing_user": True})
+                    return "You already have caregiver access. " + self._role_prompt()
+                return None
 
         if identity is not None and linked_patient_count == 0:
             pending = self.store.get_pending_verification_for_caregiver(identity.participant_id)
@@ -158,6 +288,50 @@ class OnboardingService:
                 return "Verification request not found. Reply 'hi' to restart onboarding."
             return self._handle_caregiver_pending(sender_phone=sender_phone, body=body, request=request)
 
+        if session.state == "patient_invite_caregiver_phone":
+            caregiver_phone = self._normalize_phone_input(text)
+            if caregiver_phone is None:
+                return "Invalid phone format. Reply with +countrycode number, e.g. +919999999999."
+            data["invite_caregiver_phone"] = caregiver_phone
+            self._save_session(sender_phone, state="patient_invite_preset", status="active", data=data)
+            return "Choose caregiver preset: 1) primary caregiver 2) observer"
+
+        if session.state == "patient_invite_preset":
+            preset = self._parse_caregiver_preset(text)
+            if preset is None:
+                return "Choose caregiver preset: 1) primary caregiver 2) observer"
+            data["invite_caregiver_preset"] = preset
+            invite_request, error_text = self._start_patient_initiated_caregiver_invite(
+                sender_phone=sender_phone,
+                identity=identity,
+                data=data,
+            )
+            if invite_request is None:
+                self._save_session(
+                    sender_phone,
+                    state="completed",
+                    status="completed",
+                    data=data,
+                    completion_note="patient_invite_failed",
+                )
+                return error_text or "Could not start caregiver invite right now."
+            self._save_session(
+                sender_phone,
+                state="completed",
+                status="completed",
+                data={
+                    "invite_request_id": invite_request.id,
+                    "invite_caregiver_phone": invite_request.caregiver_phone_number,
+                    "invite_caregiver_preset": preset,
+                },
+                completion_note="patient_invite_created",
+            )
+            preset_text = "observer" if preset == "observer" else "primary caregiver"
+            return (
+                f"Invite sent to {invite_request.caregiver_phone_number} as {preset_text}. "
+                f"They can reply APPROVE {invite_request.approval_code} or DECLINE {invite_request.approval_code}."
+            )
+
         if session.state in {"completed", "verification_failed"}:
             return "Onboarding already completed. Reply 'schedule' or 'help'."
 
@@ -233,6 +407,18 @@ class OnboardingService:
         session_data.pop("setup_draft", None)
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
         return self._setup_menu_prompt()
+
+    def _handle_existing_user_invite_management(self, *, sender_phone: str, body: str, invite_target: dict) -> str | None:
+        if self._is_patient_invite_list_trigger(body):
+            return self._patient_invite_list_prompt(sender_phone=sender_phone, patient_id=str(invite_target["invite_patient_id"]))
+        cancel_reference = self._parse_patient_invite_cancel_command(body)
+        if cancel_reference is not None:
+            return self._cancel_patient_invite(
+                sender_phone=sender_phone,
+                patient_id=str(invite_target["invite_patient_id"]),
+                reference=cancel_reference,
+            )
+        return None
 
     def _handle_medication_setup(
         self,
@@ -546,33 +732,46 @@ class OnboardingService:
 
     def _handle_verification_message(self, *, sender_phone: str, body: str) -> str | None:
         command, code = self._parse_verification_reply(body)
-        requests = self.store.list_pending_verifications_for_patient_phone(sender_phone)
-        if not requests:
+        patient_requests = [
+            request
+            for request in self.store.list_pending_verifications_for_patient_phone(sender_phone)
+            if not self._is_patient_initiated_invite_request(request)
+        ]
+        caregiver_requests = self.store.list_pending_verifications_for_caregiver_phone(sender_phone)
+        if not patient_requests and not caregiver_requests:
             if command in {"approve", "decline"}:
                 return "No pending caregiver approval request for this number."
             return None
 
+        if patient_requests and caregiver_requests:
+            return "Multiple approval requests pending. Reply APPROVE <code> or DECLINE <code>."
+
         if command is None:
+            requests = patient_requests or caregiver_requests
             if len(requests) == 1:
                 req = requests[0]
+                subject = req.patient_name if patient_requests else req.patient_name
                 return (
-                    f"Caregiver approval pending for {req.patient_name}. "
+                    f"Caregiver approval pending for {subject}. "
                     f"Reply APPROVE {req.approval_code} or DECLINE {req.approval_code}."
                 )
             return "Multiple approval requests pending. Reply APPROVE <code> or DECLINE <code>."
 
+        requests = patient_requests if patient_requests else caregiver_requests
+        resolution_actor = "patient" if patient_requests else "caregiver"
         chosen = self._choose_verification_request(requests, code)
         if chosen is None:
             return "Invalid approval code. Reply APPROVE <code> or DECLINE <code>."
 
         if command == "approve":
+            caregiver_preset = self._caregiver_preset_for_relationship(chosen.relationship)
             self.store.update_verification_request(
                 chosen.id,
                 status="approved",
                 resolved_at=datetime.now(UTC),
-                resolution_note="approved_by_patient",
+                resolution_note=f"approved_by_{resolution_actor}",
             )
-            self.store.link_caregiver(chosen.caregiver_participant_id, chosen.patient_id)
+            self.store.link_caregiver(chosen.caregiver_participant_id, chosen.patient_id, preset=caregiver_preset)
             self.store.link_caregiver(chosen.patient_participant_id, chosen.patient_id)
             self.store.set_active_patient_context(chosen.caregiver_participant_id, chosen.patient_id, "verification_approved")
             self._activate_setup_session(
@@ -581,30 +780,102 @@ class OnboardingService:
                 patient_id=chosen.patient_id,
                 source="verification_approved",
             )
-            caregiver_msg = (
-                f"Approved by {chosen.patient_name}. Caregiver access is now active.\n"
-                + self._setup_menu_prompt()
+            if patient_requests:
+                caregiver_msg = (
+                    f"Approved by {chosen.patient_name}. Caregiver access is now active.\n"
+                    + self._setup_menu_prompt()
+                )
+                self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
+                return "Approved. Caregiver has been informed."
+
+            self._send_whatsapp_by_phone(
+                chosen.patient_phone_number,
+                (
+                    f"{chosen.caregiver_phone_number} accepted caregiver access for {chosen.patient_name} "
+                    f"as {caregiver_preset.replace('_', ' ')}."
+                ),
             )
-            self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
-            return "Approved. Caregiver has been informed."
+            return f"Approved. Caregiver access for {chosen.patient_name} is now active.\n{self._setup_menu_prompt()}"
 
         self.store.update_verification_request(
             chosen.id,
             status="declined",
             resolved_at=datetime.now(UTC),
-            resolution_note="declined_by_patient",
+            resolution_note=f"declined_by_{resolution_actor}",
         )
-        self.store.save_onboarding_session(
-            phone_number=chosen.caregiver_phone_number,
-            state="completed",
-            status="completed",
-            data={"verification_request_id": chosen.id},
-            expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
-            completion_note="verification_declined",
+        if patient_requests:
+            self.store.save_onboarding_session(
+                phone_number=chosen.caregiver_phone_number,
+                state="completed",
+                status="completed",
+                data={"verification_request_id": chosen.id},
+                expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
+                completion_note="verification_declined",
+            )
+            caregiver_msg = f"Declined by {chosen.patient_name}. No caregiver link was created."
+            self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
+            return "Declined. Caregiver has been informed."
+
+        self._send_whatsapp_by_phone(
+            chosen.patient_phone_number,
+            f"{chosen.caregiver_phone_number} declined caregiver access for {chosen.patient_name}.",
         )
-        caregiver_msg = f"Declined by {chosen.patient_name}. No caregiver link was created."
-        self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
-        return "Declined. Caregiver has been informed."
+        return "Declined. No caregiver link was created."
+
+    def _patient_invite_list_prompt(self, *, sender_phone: str, patient_id: str) -> str:
+        pending = self._pending_patient_invites(sender_phone=sender_phone, patient_id=patient_id)
+        if not pending:
+            return "No pending caregiver invites for the active patient."
+        lines = ["Pending caregiver invites:"]
+        for request in pending:
+            preset = self._caregiver_preset_for_relationship(request.relationship).replace("_", " ")
+            lines.append(f"- {request.caregiver_phone_number} as {preset} (code {request.approval_code})")
+        lines.append("Reply `cancel invite <code>` to revoke one.")
+        return "\n".join(lines)
+
+    def _cancel_patient_invite(self, *, sender_phone: str, patient_id: str, reference: str) -> str:
+        pending = self._pending_patient_invites(sender_phone=sender_phone, patient_id=patient_id)
+        if not pending:
+            return "No pending caregiver invites for the active patient."
+        chosen = self._choose_patient_invite_request(pending, reference)
+        if chosen is None:
+            return "Reply `cancel invite <code>` using one of the pending invite codes."
+        self.store.update_verification_request(
+            chosen.id,
+            status="canceled",
+            resolved_at=datetime.now(UTC),
+            resolution_note="canceled_by_patient",
+        )
+        self._send_whatsapp_by_phone(
+            chosen.caregiver_phone_number,
+            f"CareOS invite cancelled by {chosen.patient_name}. No caregiver link was created.",
+        )
+        return f"Cancelled invite for {chosen.caregiver_phone_number}."
+
+    def _pending_patient_invites(self, *, sender_phone: str, patient_id: str) -> list[CaregiverVerificationRequest]:
+        return [
+            request
+            for request in self.store.list_pending_verifications_for_patient_phone(sender_phone)
+            if str(request.patient_id) == patient_id
+        ]
+
+    def _choose_patient_invite_request(
+        self,
+        requests: list[CaregiverVerificationRequest],
+        reference: str,
+    ) -> CaregiverVerificationRequest | None:
+        normalized = reference.strip()
+        if not normalized:
+            return requests[0] if len(requests) == 1 else None
+        normalized_phone = self._normalize_phone_input(normalized)
+        for request in requests:
+            if normalized.lower() == request.approval_code.lower():
+                return request
+            if normalized.lower() == request.caregiver_phone_number.lower():
+                return request
+            if normalized_phone is not None and normalized_phone == request.caregiver_phone_number:
+                return request
+        return None
 
     def _handle_caregiver_pending(self, *, sender_phone: str, body: str, request: CaregiverVerificationRequest) -> str:
         now = datetime.now(UTC)
@@ -812,12 +1083,102 @@ class OnboardingService:
         )
         return self.store.get_verification_request(request.id)
 
+    def _start_patient_initiated_caregiver_invite(
+        self,
+        *,
+        sender_phone: str,
+        identity: ParticipantIdentity | None,
+        data: dict,
+    ) -> tuple[CaregiverVerificationRequest | None, str | None]:
+        if identity is None:
+            return None, "Could not resolve patient identity for this invite."
+
+        tenant_id = str(data.get("invite_tenant_id") or identity.tenant_id)
+        patient_id = str(data.get("invite_patient_id") or "")
+        patient_participant_id = str(data.get("invite_patient_participant_id") or identity.participant_id)
+        patient_name = str(data.get("invite_patient_name") or "Patient")
+        caregiver_phone = str(data.get("invite_caregiver_phone") or "")
+        preset = str(data.get("invite_caregiver_preset") or "primary_caregiver")
+        relationship = "observer" if preset == "observer" else "primary caregiver"
+        normalized_sender = self._normalize_phone_input(sender_phone) or sender_phone
+
+        if not patient_id or not caregiver_phone:
+            return None, "Could not resolve the patient or caregiver phone for this invite."
+        if self._normalize_phone_input(caregiver_phone) == normalized_sender:
+            return None, "You are already linked to this patient. Invite a different caregiver number."
+
+        existing_caregiver = self.store.find_participant_record_by_phone(caregiver_phone)
+        if existing_caregiver is not None and str(existing_caregiver["tenant_id"]) != tenant_id:
+            return (
+                None,
+                "That WhatsApp number already belongs to a different CareOS family workspace. "
+                "Under the current model, one phone can only belong to one tenant. "
+                "Use a different number or migrate that person into this family workspace first.",
+            )
+
+        caregiver_participant_id: str
+        caregiver_name: str
+        if existing_caregiver is not None:
+            caregiver_participant_id = str(existing_caregiver["id"])
+            caregiver_name = str(existing_caregiver.get("display_name") or "Caregiver")
+            if self.store.get_caregiver_link(caregiver_participant_id, patient_id) is not None:
+                return None, f"{caregiver_phone} is already linked to {patient_name}."
+            existing_pending = self.store.get_pending_verification_for_caregiver(caregiver_participant_id)
+            if existing_pending is not None:
+                return existing_pending, None
+        else:
+            caregiver = self.store.create_participant(
+                ParticipantCreate(
+                    tenant_id=tenant_id,
+                    role=Role.CAREGIVER,
+                    display_name="Invited Caregiver",
+                    phone_number=caregiver_phone,
+                    preferred_channel="whatsapp",
+                    preferred_language="en",
+                    active=True,
+                )
+            )
+            caregiver_participant_id = str(caregiver["id"])
+            caregiver_name = str(caregiver["display_name"])
+
+        ttl_hours = max(int(settings.onboarding_verification_ttl_hours), 1)
+        request = self.store.create_caregiver_verification_request(
+            tenant_id=tenant_id,
+            caregiver_participant_id=caregiver_participant_id,
+            patient_id=patient_id,
+            patient_participant_id=patient_participant_id,
+            caregiver_name=caregiver_name,
+            caregiver_phone_number=caregiver_phone,
+            patient_name=patient_name,
+            patient_phone_number=normalized_sender,
+            relationship=relationship,
+            approval_code=self._approval_code(),
+            expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
+        )
+        sent = self._send_patient_initiated_invite_prompt(request)
+        now = datetime.now(UTC)
+        self.store.update_verification_request(
+            request.id,
+            send_attempt_count=1,
+            last_sent_at=now,
+            resolution_note="invite_sent" if sent else "invite_not_configured",
+        )
+        return self.store.get_verification_request(request.id), None
+
     def _send_verification_prompt(self, request: CaregiverVerificationRequest) -> bool:
         body = (
             f"CareOS request: {request.caregiver_name} asks caregiver access for {request.patient_name}. "
             f"Reply APPROVE {request.approval_code} or DECLINE {request.approval_code}."
         )
         return self._send_whatsapp_by_phone(request.patient_phone_number, body)
+
+    def _send_patient_initiated_invite_prompt(self, request: CaregiverVerificationRequest) -> bool:
+        preset = self._caregiver_preset_for_relationship(request.relationship).replace("_", " ")
+        body = (
+            f"CareOS invite: {request.patient_name} invited you as {preset}. "
+            f"Reply APPROVE {request.approval_code} or DECLINE {request.approval_code}."
+        )
+        return self._send_whatsapp_by_phone(request.caregiver_phone_number, body)
 
     def _send_whatsapp_by_phone(self, phone_number: str, body: str) -> bool:
         if not settings.twilio_account_sid or not settings.twilio_auth_token or not settings.twilio_whatsapp_number:
@@ -865,10 +1226,45 @@ class OnboardingService:
         if not parts:
             return None, None
         cmd = parts[0].lower()
+        if cmd == "accept":
+            cmd = "approve"
+        elif cmd == "reject":
+            cmd = "decline"
         if cmd not in {"approve", "decline"}:
             return None, None
         code = parts[1].strip() if len(parts) > 1 else None
         return cmd, code
+
+    def _is_patient_initiated_invite_request(self, request: CaregiverVerificationRequest) -> bool:
+        return str(request.resolution_note or "").startswith("invite_")
+
+    def _parse_caregiver_preset(self, body: str) -> str | None:
+        normalized = " ".join(body.strip().lower().split())
+        if normalized in {"1", "primary", "primary caregiver", "full caregiver"}:
+            return "primary_caregiver"
+        if normalized in {"2", "observer", "updates only", "family observer"}:
+            return "observer"
+        return None
+
+    def _resolve_existing_user_patient_target(self, identity: ParticipantIdentity) -> dict | None:
+        patient_id = self.store.get_active_patient_context(identity.participant_id)
+        if patient_id is None:
+            linked = self.store.list_linked_patients(identity.participant_id)
+            if len(linked) == 1:
+                patient_id = linked[0].patient_id
+        if patient_id is None:
+            return None
+
+        profile = self.store.get_patient_profile(patient_id)
+        if profile is None:
+            return None
+
+        return {
+            "invite_patient_id": patient_id,
+            "invite_patient_name": str(profile.get("display_name") or patient_id),
+            "invite_tenant_id": str(profile.get("tenant_id") or identity.tenant_id),
+            "invite_patient_participant_id": identity.participant_id,
+        }
 
     def _approval_code(self) -> str:
         return uuid4().hex[:6].upper()

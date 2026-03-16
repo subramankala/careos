@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import re
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
@@ -98,6 +99,66 @@ def _normalize_setup_intent(text: str) -> str | None:
     return None
 
 
+def _parse_caregiver_preset_command(text: str) -> tuple[str, str] | None:
+    normalized = " ".join(text.strip().lower().split())
+    match = re.fullmatch(r"set caregiver (\+?\d{7,15}) as (observer|primary|primary caregiver|primary_caregiver)", normalized)
+    if match is None:
+        return None
+    phone_number = match.group(1)
+    if not phone_number.startswith("+"):
+        phone_number = f"+{phone_number}"
+    preset = "observer" if match.group(2) == "observer" else "primary_caregiver"
+    return phone_number, preset
+
+
+def _list_caregivers_reply(patient_id: str) -> str:
+    links = app_context.store.list_caregiver_links_for_patient(patient_id)
+    if not links:
+        return "No caregivers are linked to this patient."
+    lines = ["Caregivers:"]
+    for index, link in enumerate(links, start=1):
+        name = str(link.get("display_name", link.get("caregiver_participant_id", "")))
+        phone_number = str(link.get("phone_number", ""))
+        preset = str(link.get("preset", "primary_caregiver")).replace("_", " ")
+        lines.append(f"{index}. {name} ({phone_number}) - {preset}")
+    lines.append("Reply: set caregiver <phone> as observer|primary")
+    return "\n".join(lines)
+
+
+def _normalize_phone(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized.startswith("whatsapp:"):
+        normalized = normalized[len("whatsapp:") :]
+    return "".join(ch for ch in normalized if ch.isdigit() or ch == "+")
+
+
+def _update_caregiver_preset_reply(*, actor_id: str, patient_id: str, phone_number: str, preset: str) -> str:
+    actor_link = app_context.store.get_caregiver_link(actor_id, patient_id)
+    if actor_link is None or not bool(actor_link.get("can_edit_plan", False)):
+        return "Only a primary caregiver can change caregiver presets."
+    normalized_phone = _normalize_phone(phone_number)
+    target_link = next(
+        (
+            link
+            for link in app_context.store.list_caregiver_links_for_patient(patient_id)
+            if _normalize_phone(str(link.get("phone_number", ""))) == normalized_phone
+        ),
+        None,
+    )
+    if target_link is None:
+        return f"I could not find a caregiver with phone {phone_number}."
+    caregiver_participant_id = str(target_link.get("caregiver_participant_id", ""))
+    updated = app_context.store.update_caregiver_link_preset(caregiver_participant_id, patient_id, preset)
+    if updated is None:
+        return "I could not update that caregiver preset right now."
+    name = str(target_link.get("display_name", caregiver_participant_id))
+    label = "observer" if preset == "observer" else "primary caregiver"
+    return (
+        f"Updated {name} to {label}. "
+        f"Authorization version is now {int(updated.get('authorization_version', 1) or 1)}."
+    )
+
+
 def _parse_use_target(raw_body: str) -> str | None:
     parts = raw_body.strip().split(maxsplit=1)
     if len(parts) != 2:
@@ -187,6 +248,50 @@ def _render_schedule(payload: dict, *, prefix: str = "Schedule") -> str:
         local_time = start.astimezone(tz).strftime("%H:%M")
         lines.append(f"{idx}. {local_time} {item['title']} [{item['current_state']}]")
     return "\n".join(lines)
+
+
+def _is_short_completion_reply(text: str) -> bool:
+    normalized = " ".join(text.strip().lower().split())
+    return normalized in {
+        "taken",
+        "took it",
+        "i took it",
+        "i took them",
+        "gave it",
+        "given",
+        "administered",
+    }
+
+
+def _implicit_completion_reply(text: str, context: dict, today: dict) -> str | None:
+    if not _is_short_completion_reply(text):
+        return None
+    reminder_context = adapter.get_latest_scheduled_reminder_context(
+        str(context["participant_id"]),
+        str(context["patient_id"]),
+    )
+    if reminder_context is not None and str(reminder_context.get("win_instance_id", "")).strip():
+        win_instance_id = str(reminder_context["win_instance_id"])
+        title = str(reminder_context.get("title", "task")).strip() or "task"
+        adapter.complete_win(win_instance_id, str(context["participant_id"]))
+        return f"Marked {title.lower()} as completed."
+    timeline = list(today.get("timeline", []))
+    actionable = [
+        item
+        for item in timeline
+        if str(item.get("current_state", "")).lower() in {"due", "delayed"}
+    ]
+    if len(actionable) == 1:
+        item = actionable[0]
+        adapter.complete_win(str(item["win_instance_id"]), str(context["participant_id"]))
+        return f"Marked {str(item.get('title', 'task')).lower()} as completed."
+    if len(actionable) > 1:
+        lines = ["I found multiple due items. Reply with one of these instead:"]
+        for index, item in enumerate(actionable[:5], start=1):
+            lines.append(f"- done {index} for {item['title']}")
+        lines.append("You can also ask for your schedule first.")
+        return "\n".join(lines)
+    return "I could not find a currently due item to mark completed. Send 'schedule' or 'done <number>'."
 
 
 def _pending_key(context: dict) -> str:
@@ -473,6 +578,11 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         return Response(content=message_response("Okay, I did not create that change."), media_type="text/xml")
 
     normalized = text.strip().lower()
+    today = adapter.get_today(str(context["patient_id"]))
+    implicit_completion = _implicit_completion_reply(text, context, today)
+    if implicit_completion is not None:
+        return Response(content=message_response(implicit_completion), media_type="text/xml")
+    preset_command = _parse_caregiver_preset_command(text)
     if normalized in {"patients", "switch"}:
         if linked_patients:
             if len(linked_patients) == 1:
@@ -488,12 +598,22 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             content=message_response("No linked patients were found for this number."),
             media_type="text/xml",
         )
+    if normalized in {"caregivers", "list caregivers"}:
+        return Response(content=message_response(_list_caregivers_reply(str(context["patient_id"]))), media_type="text/xml")
+    if preset_command is not None:
+        phone_number, preset = preset_command
+        reply = _update_caregiver_preset_reply(
+            actor_id=str(context["participant_id"]),
+            patient_id=str(context["patient_id"]),
+            phone_number=phone_number,
+            preset=preset,
+        )
+        return Response(content=message_response(reply), media_type="text/xml")
 
     if _is_legacy_router_command(text):
         result = app_context.router.handle(text, _to_participant_context(context))
         return Response(content=message_response(result.text), media_type="text/xml")
 
-    today = adapter.get_today(str(context["patient_id"]))
     compiled_plan = plan_action_request(text, context, today.get("timeline", []), adapter)
     if compiled_plan is not None and compiled_plan.execution_strategy == "clarify_target":
         return Response(content=message_response(compiled_plan.confirmation_text), media_type="text/xml")

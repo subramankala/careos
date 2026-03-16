@@ -37,6 +37,9 @@ class _AdapterBase:
     def get_status(self, patient_id: str) -> dict:
         return {"completed_count": 0, "due_count": 1, "missed_count": 0, "skipped_count": 0, "adherence_score": 0.0}
 
+    def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict | None:
+        return None
+
     def generate_dashboard_view(
         self,
         *,
@@ -136,6 +139,18 @@ class _AdapterBase:
         return {"ok": True}
 
 
+class _ObserverAdapter(_AdapterBase):
+    def resolve_context(self, phone_number: str) -> dict | None:
+        return {
+            "tenant_id": "tenant-1",
+            "participant_id": "participant-2",
+            "participant_role": "caregiver",
+            "patient_id": "patient-1",
+            "patient_timezone": "Asia/Kolkata",
+            "patient_persona": "caregiver_managed_elder",
+        }
+
+
 class _OpenClawOK:
     def handle(self, text: str, context) -> CommandResult:  # noqa: ANN001
         return CommandResult(action="openclaw_fallback", text="OpenClaw says hello.")
@@ -196,6 +211,7 @@ class _FakeOnboardingService:
     def __init__(self) -> None:
         self.setup_active = False
         self.last_setup_type: str | None = None
+        self.onboarding_active = False
 
     def _activate_setup_session(self, *, phone_number: str, participant_id: str, patient_id: str, source: str) -> None:
         self.setup_active = True
@@ -204,6 +220,15 @@ class _FakeOnboardingService:
         normalized = body.strip().lower()
         if identity is None and body.strip().lower() == "hi":
             return "Welcome to CareOS Lite onboarding. Are you: 1) myself 2) someone I care for"
+        if identity is not None and linked_patient_count > 0 and normalized == "register me as patient":
+            self.onboarding_active = True
+            return "You already have caregiver access. Are you onboarding for:\n1) myself\n2) someone I care for\nReply: myself or someone I care for"
+        if identity is not None and linked_patient_count > 0 and self.onboarding_active:
+            if normalized in {"cancel onboarding", "exit onboarding", "stop onboarding"}:
+                self.onboarding_active = False
+                return "Okay, I closed onboarding. Reply 'help' for commands."
+            if normalized in {"restart onboarding", "start onboarding again"}:
+                return "Restarting onboarding.\nAre you onboarding for:\n1) myself\n2) someone I care for\nReply: myself or someone I care for"
         if self.setup_active:
             if normalized in {"cancel setup", "cancel wizard"}:
                 self.setup_active = False
@@ -222,6 +247,77 @@ class _FakeOnboardingService:
                 self.last_setup_type = "routine"
                 return "Routine category: 1) meal 2) movement 3) sleep 4) therapy"
         return None
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.participants = {
+            "participant-1": {
+                "id": "participant-1",
+                "display_name": "Primary Caregiver",
+                "phone_number": "whatsapp:+15550001111",
+                "role": "caregiver",
+                "active": True,
+            },
+            "participant-2": {
+                "id": "participant-2",
+                "display_name": "Observer Caregiver",
+                "phone_number": "whatsapp:+15550002222",
+                "role": "caregiver",
+                "active": True,
+            },
+        }
+        self.links = {
+            ("participant-1", "patient-1"): {
+                "caregiver_participant_id": "participant-1",
+                "patient_id": "patient-1",
+                "display_name": "Primary Caregiver",
+                "phone_number": "whatsapp:+15550001111",
+                "preset": "primary_caregiver",
+                "scopes": ["view_dashboard", "update_task"],
+                "notification_preferences": {"due_reminders": True},
+                "authorization_version": 1,
+                "can_edit_plan": True,
+            },
+            ("participant-2", "patient-1"): {
+                "caregiver_participant_id": "participant-2",
+                "patient_id": "patient-1",
+                "display_name": "Observer Caregiver",
+                "phone_number": "whatsapp:+15550002222",
+                "preset": "observer",
+                "scopes": ["view_dashboard"],
+                "notification_preferences": {"due_reminders": False},
+                "authorization_version": 2,
+                "can_edit_plan": False,
+            },
+        }
+
+    def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
+        return [dict(link) for (participant_id, linked_patient_id), link in self.links.items() if linked_patient_id == patient_id]
+
+    def get_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        link = self.links.get((caregiver_participant_id, patient_id))
+        return dict(link) if link is not None else None
+
+    def find_participant_record_by_phone(self, phone_number: str) -> dict | None:
+        normalized = phone_number.replace(" ", "")
+        with_prefix = normalized if normalized.startswith("whatsapp:") else f"whatsapp:{normalized}"
+        for participant in self.participants.values():
+            if participant["phone_number"] in {normalized, with_prefix}:
+                return dict(participant)
+        return None
+
+    def update_caregiver_link_preset(self, caregiver_participant_id: str, patient_id: str, preset: str) -> dict | None:
+        link = self.links.get((caregiver_participant_id, patient_id))
+        if link is None:
+            return None
+        link = dict(link)
+        link["preset"] = "observer" if preset == "observer" else "primary_caregiver"
+        link["authorization_version"] = int(link.get("authorization_version", 1)) + 1
+        link["can_edit_plan"] = preset != "observer"
+        link["notification_preferences"] = {"due_reminders": preset != "observer"}
+        self.links[(caregiver_participant_id, patient_id)] = link
+        return dict(link)
 
 
 class _FakeLegacyRouter:
@@ -245,10 +341,23 @@ class _FakeLegacyRouter:
         if normalized in {"help", "?"}:
             return CommandResult(
                 action="help",
-                text="Commands: schedule, next, status, whoami, patients, switch, use <n>, done, delay, skip",
+                text=(
+                    "Commands: schedule, next, status, whoami, patients, switch, use <n>, dashboard, caregivers, "
+                    "set caregiver <phone> as observer|primary, invite caregiver, pending invites, cancel invite <code>, "
+                    "add a medication, add an appointment, add a routine, "
+                    "restart setup, cancel setup, register me as patient, cancel onboarding, restart onboarding, "
+                    "done <item_no|win_id> [more items...], delay, skip"
+                ),
             )
         if normalized.startswith("done "):
-            return CommandResult(action="done", text=f"Marked {text.strip().split(maxsplit=1)[1]} as completed.")
+            refs = [
+                token
+                for token in text.strip().split(maxsplit=1)[1].replace(",", " ").split()
+                if token and token.lower() not in {"and", "&", "then"}
+            ]
+            if len(refs) == 1:
+                return CommandResult(action="done", text=f"Marked {refs[0]} as completed.")
+            return CommandResult(action="done", text=f"Marked {', '.join(refs)} as completed.")
         if normalized.startswith("skip "):
             return CommandResult(action="skip", text=f"Marked {text.strip().split(maxsplit=1)[1]} as skipped.")
         if normalized.startswith("delay "):
@@ -262,6 +371,7 @@ class _FakeAppContext:
         self.identity_service = _FakeIdentityService()
         self.onboarding = _FakeOnboardingService()
         self.router = _FakeLegacyRouter()
+        self.store = _FakeStore()
 
 
 twilio_gateway.app_context = _FakeAppContext()
@@ -380,6 +490,9 @@ def test_gateway_restores_help_legacy_command(monkeypatch) -> None:
         )
         assert response.status_code == 200
         assert b"Commands: schedule, next, status, whoami" in response.body
+        assert b"caregivers" in response.body
+        assert b"invite caregiver" in response.body
+        assert b"register me as patient" in response.body
     finally:
         settings.gateway_conversation_mode = previous_mode
 
@@ -454,6 +567,166 @@ def test_gateway_restores_done_skip_delay_legacy_commands(monkeypatch) -> None:
         settings.gateway_conversation_mode = previous_mode
 
 
+def test_gateway_restores_batch_done_legacy_command(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "openclaw_first"
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "openclaw_delegate", _OpenClawUnavailable())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "done 1 2 3 4 5 6",
+                "MessageSid": "SM-gw-legacy-done-batch",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked 1, 2, 3, 4, 5, 6 as completed." in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_restores_batch_done_with_and_legacy_command(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "openclaw_first"
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "openclaw_delegate", _OpenClawUnavailable())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "done 1 and 2",
+                "MessageSid": "SM-gw-legacy-done-batch-and",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked 1, 2 as completed." in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_marks_single_due_item_completed_from_taken_reply(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-due-1",
+            "title": "Ecosprin 75mg",
+            "category": "medication",
+            "criticality": "high",
+            "flexibility": "rigid",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Taken",
+                "MessageSid": "SM-gw-taken-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked ecosprin 75mg as completed." in response.body
+        assert adapter.completed_instances == [{"instance_id": "win-due-1", "actor_id": "participant-1"}]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_marks_latest_reminder_target_completed_from_taken_reply(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-due-1",
+            "title": "Some other task",
+            "category": "routine",
+            "criticality": "low",
+            "flexibility": "flexible",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        }
+    ]
+    adapter.get_latest_scheduled_reminder_context = lambda participant_id, patient_id: {  # type: ignore[method-assign]
+        "participant_id": participant_id,
+        "patient_id": patient_id,
+        "win_instance_id": "win-reminder-1",
+        "title": "Ecosprin 75mg",
+        "scheduled_start": "2099-03-15T09:30:00+00:00",
+        "correlation_id": "sched:patient-1:win-reminder-1:participant-1",
+        "created_at": "2099-03-15T09:30:00+00:00",
+    }
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "I took it",
+                "MessageSid": "SM-gw-taken-reminder-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked ecosprin 75mg as completed." in response.body
+        assert adapter.completed_instances == [{"instance_id": "win-reminder-1", "actor_id": "participant-1"}]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_clarifies_taken_reply_when_multiple_due_items_exist(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-due-1",
+            "title": "Ecosprin 75mg",
+            "category": "medication",
+            "criticality": "high",
+            "flexibility": "rigid",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        },
+        {
+            "win_instance_id": "win-due-2",
+            "title": "Dytor 5mg",
+            "category": "medication",
+            "criticality": "medium",
+            "flexibility": "windowed",
+            "scheduled_start": "2099-03-15T09:30:00+00:00",
+            "scheduled_end": "2099-03-15T10:00:00+00:00",
+            "current_state": "due",
+        },
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "I took it",
+                "MessageSid": "SM-gw-taken-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"I found multiple due items." in response.body
+        assert b"done 1" in response.body
+        assert b"done 2" in response.body
+        assert adapter.completed_instances == []
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
 def test_gateway_restores_patients_and_use_commands(monkeypatch) -> None:
     previous_mode = settings.gateway_conversation_mode
     settings.gateway_conversation_mode = "deterministic_first"
@@ -512,6 +785,122 @@ def test_gateway_patients_command_handles_single_patient_context(monkeypatch) ->
         settings.gateway_conversation_mode = previous_mode
 
 
+def test_gateway_lists_caregivers_for_active_patient(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "caregivers",
+                "MessageSid": "SM-gw-caregivers-list",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Caregivers:" in response.body
+        assert b"Primary Caregiver" in response.body
+        assert b"Observer Caregiver" in response.body
+        assert b"set caregiver &lt;phone&gt; as observer|primary" in response.body
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_primary_caregiver_can_update_observer_preset(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "set caregiver +15550002222 as primary",
+                "MessageSid": "SM-gw-caregivers-update",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Updated Observer Caregiver to primary caregiver." in response.body
+        updated = fake_context.store.get_caregiver_link("participant-2", "patient-1")
+        assert updated is not None
+        assert updated["preset"] == "primary_caregiver"
+        assert updated["authorization_version"] == 3
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_updates_caregiver_preset_from_linked_phone_even_if_global_lookup_is_wrong(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+
+    def _wrong_lookup(phone_number: str) -> dict | None:
+        normalized = phone_number.replace(" ", "")
+        if normalized in {"+15550002222", "whatsapp:+15550002222"}:
+            return {
+                "id": "participant-patient-shadow",
+                "display_name": "Shadow Patient",
+                "phone_number": "whatsapp:+15550002222",
+                "role": "patient",
+                "active": True,
+            }
+        return fake_context.store.find_participant_record_by_phone(phone_number)
+
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        monkeypatch.setattr(fake_context.store, "find_participant_record_by_phone", _wrong_lookup)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "set caregiver +15550002222 as primary",
+                "MessageSid": "SM-gw-caregivers-update-linked-phone",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Updated Observer Caregiver to primary caregiver." in response.body
+        updated = fake_context.store.get_caregiver_link("participant-2", "patient-1")
+        assert updated is not None
+        assert updated["preset"] == "primary_caregiver"
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_observer_cannot_update_caregiver_preset(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.identity_service.identity = ParticipantIdentity(
+        tenant_id="tenant-1",
+        participant_id="participant-2",
+        participant_role=Role.CAREGIVER,
+    )
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _ObserverAdapter())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550002222",
+                "To": "whatsapp:+14155238886",
+                "Body": "set caregiver +15550001111 as observer",
+                "MessageSid": "SM-gw-caregivers-denied",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Only a primary caregiver can change caregiver presets." in response.body
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
 def test_gateway_restores_onboarding_entry(monkeypatch) -> None:
     previous_mode = settings.gateway_conversation_mode
     settings.gateway_conversation_mode = "deterministic_first"
@@ -530,6 +919,53 @@ def test_gateway_restores_onboarding_entry(monkeypatch) -> None:
         )
         assert response.status_code == 200
         assert b"Welcome to CareOS Lite onboarding." in response.body
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_existing_caregiver_can_cancel_onboarding(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.onboarding.onboarding_active = True
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "cancel onboarding",
+                "MessageSid": "SM-gw-cancel-onboarding",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Okay, I closed onboarding." in response.body
+        assert fake_context.onboarding.onboarding_active is False
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_existing_caregiver_can_trigger_self_onboarding(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "register me as patient",
+                "MessageSid": "SM-gw-onboard-existing",
+            }
+        )
+        assert response.status_code == 200
+        assert b"You already have caregiver access." in response.body
+        assert b"Are you onboarding for:" in response.body
     finally:
         monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
         settings.gateway_conversation_mode = previous_mode
@@ -767,8 +1203,8 @@ def test_gateway_returns_clarification_for_ambiguous_target(monkeypatch) -> None
             "category": "medication",
             "criticality": "high",
             "flexibility": "rigid",
-            "scheduled_start": "2026-03-14T08:30:00+00:00",
-            "scheduled_end": "2026-03-14T09:00:00+00:00",
+            "scheduled_start": "2099-03-14T08:30:00+00:00",
+            "scheduled_end": "2099-03-14T09:00:00+00:00",
             "current_state": "pending",
         },
         {
@@ -777,8 +1213,8 @@ def test_gateway_returns_clarification_for_ambiguous_target(monkeypatch) -> None
             "category": "medication",
             "criticality": "high",
             "flexibility": "rigid",
-            "scheduled_start": "2026-03-14T12:30:00+00:00",
-            "scheduled_end": "2026-03-14T13:00:00+00:00",
+            "scheduled_start": "2099-03-14T12:30:00+00:00",
+            "scheduled_end": "2099-03-14T13:00:00+00:00",
             "current_state": "pending",
         },
     ]
@@ -1100,8 +1536,8 @@ def test_gateway_overrides_recurring_update_task(monkeypatch) -> None:
             "category": "medication",
             "criticality": "medium",
             "flexibility": "windowed",
-            "scheduled_start": "2026-03-14T10:30:00+00:00",
-            "scheduled_end": "2026-03-14T11:00:00+00:00",
+            "scheduled_start": "2099-03-14T10:30:00+00:00",
+            "scheduled_end": "2099-03-14T11:00:00+00:00",
             "current_state": "pending",
         }
     ]
