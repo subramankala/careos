@@ -16,13 +16,83 @@ from careos.domain.models.api import (
     CaregiverVerificationRequest,
     LinkedPatientSummary,
     OnboardingSession,
+    PersonIdentityCreate,
     ParticipantIdentity,
     ParticipantContext,
     ParticipantCreate,
     PatientCreate,
+    TenantMembershipCreate,
     TenantCreate,
     TimelineItem,
 )
+
+
+PRIMARY_CAREGIVER_SCOPES = [
+    "view_dashboard",
+    "view_escalations",
+    "view_medications",
+    "view_recent_events",
+    "view_criticality",
+    "create_task",
+    "update_task",
+    "complete_task",
+    "receive_due_reminders",
+    "receive_critical_alerts",
+    "receive_daily_summary",
+    "receive_low_adherence_alerts",
+]
+
+OBSERVER_SCOPES = [
+    "view_dashboard",
+    "view_recent_events",
+    "view_criticality",
+    "receive_critical_alerts",
+    "receive_daily_summary",
+    "receive_low_adherence_alerts",
+]
+
+
+def caregiver_preset_defaults(preset: str) -> dict:
+    normalized = str(preset or "primary_caregiver").strip().lower()
+    if normalized == "observer":
+        return {
+            "preset": "observer",
+            "scopes": list(OBSERVER_SCOPES),
+            "notification_preferences": {
+                "due_reminders": False,
+                "critical_alerts": True,
+                "daily_summary": True,
+                "low_adherence_alerts": True,
+            },
+            "can_edit_plan": False,
+        }
+    return {
+        "preset": "primary_caregiver",
+        "scopes": list(PRIMARY_CAREGIVER_SCOPES),
+        "notification_preferences": {
+            "due_reminders": True,
+            "critical_alerts": True,
+            "daily_summary": True,
+            "low_adherence_alerts": True,
+        },
+        "can_edit_plan": True,
+    }
+
+
+def caregiver_link_metadata(link: dict) -> dict:
+    policy = dict(link.get("notification_policy") or {})
+    preset = str(policy.get("preset") or ("primary_caregiver" if bool(link.get("can_edit_plan", True)) else "observer"))
+    defaults = caregiver_preset_defaults(preset)
+    scopes = [str(scope) for scope in policy.get("scopes", defaults["scopes"])]
+    preferences = dict(defaults["notification_preferences"])
+    preferences.update(dict(policy.get("notification_preferences") or {}))
+    return {
+        "preset": defaults["preset"] if preset not in {"primary_caregiver", "observer"} else preset,
+        "scopes": scopes,
+        "notification_preferences": preferences,
+        "authorization_version": int(policy.get("authorization_version", 1) or 1),
+        "can_edit_plan": bool(link.get("can_edit_plan", defaults["can_edit_plan"])),
+    }
 
 
 @dataclass
@@ -49,7 +119,48 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
+    def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_person_identity_by_phone(self, phone_number: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_tenant_membership(self, payload: TenantMembershipCreate) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_tenant_membership(self, tenant_id: str, person_identity_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_tenant_memberships_for_person(self, person_identity_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def link_caregiver(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        *,
+        preset: str = "primary_caregiver",
+        scopes: list[str] | None = None,
+        notification_preferences: dict | None = None,
+        authorization_version: int = 1,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_caregiver_link_preset(self, caregiver_participant_id: str, patient_id: str, preset: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
         raise NotImplementedError
 
     @abstractmethod
@@ -142,6 +253,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_pending_verifications_for_caregiver_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        raise NotImplementedError
+
+    @abstractmethod
     def update_verification_request(
         self,
         request_id: str,
@@ -160,6 +275,10 @@ class Store(ABC):
 
     @abstractmethod
     def get_patient_profile(self, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_schedulable_patients(self) -> list[str]:
         raise NotImplementedError
 
     @abstractmethod
@@ -208,6 +327,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def create_personalization_rule(
         self,
         *,
@@ -247,6 +370,8 @@ class InMemoryStore(Store):
     def __init__(self) -> None:
         self.tenants: dict[str, dict] = {}
         self.patients: dict[str, dict] = {}
+        self.person_identities: dict[str, dict] = {}
+        self.tenant_memberships: dict[str, dict] = {}
         self.participants: dict[str, dict] = {}
         self.links: list[dict] = []
         self.care_plans: dict[str, dict] = {}
@@ -265,6 +390,7 @@ class InMemoryStore(Store):
         self.caregiver_verification_requests: dict[str, dict] = {}
         self.personalization_rules: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
+        self.message_events: list[dict] = []
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -304,21 +430,134 @@ class InMemoryStore(Store):
             "active": bool(participant["active"]),
         }
 
-    def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
+    def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
+        existing = self.get_person_identity_by_phone(payload.phone_number)
+        if existing is not None:
+            return existing
+        identity_id = str(uuid4())
+        normalized_phone = _normalize_phone(payload.phone_number)
+        row = payload.model_dump()
+        row["id"] = identity_id
+        row["normalized_phone_number"] = normalized_phone
+        self.person_identities[identity_id] = row
+        return dict(row)
+
+    def get_person_identity_by_phone(self, phone_number: str) -> dict | None:
+        normalized_phone = _normalize_phone(phone_number)
+        for identity in self.person_identities.values():
+            if str(identity.get("normalized_phone_number", "")) == normalized_phone:
+                return dict(identity)
+        return None
+
+    def create_tenant_membership(self, payload: TenantMembershipCreate) -> dict:
+        existing = self.get_tenant_membership(payload.tenant_id, payload.person_identity_id)
+        if existing is not None:
+            return existing
+        membership_id = str(uuid4())
+        row = payload.model_dump()
+        row["id"] = membership_id
+        self.tenant_memberships[membership_id] = row
+        return dict(row)
+
+    def get_tenant_membership(self, tenant_id: str, person_identity_id: str) -> dict | None:
+        for membership in self.tenant_memberships.values():
+            if (
+                str(membership.get("tenant_id")) == str(tenant_id)
+                and str(membership.get("person_identity_id")) == str(person_identity_id)
+            ):
+                return dict(membership)
+        return None
+
+    def list_tenant_memberships_for_person(self, person_identity_id: str) -> list[dict]:
+        rows = [
+            dict(membership)
+            for membership in self.tenant_memberships.values()
+            if str(membership.get("person_identity_id")) == str(person_identity_id)
+        ]
+        rows.sort(key=lambda item: (str(item.get("tenant_id", "")), str(item.get("display_name", ""))))
+        return rows
+
+    def link_caregiver(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        *,
+        preset: str = "primary_caregiver",
+        scopes: list[str] | None = None,
+        notification_preferences: dict | None = None,
+        authorization_version: int = 1,
+    ) -> dict:
         for existing in self.links:
             if (
                 str(existing["caregiver_participant_id"]) == str(caregiver_participant_id)
                 and str(existing["patient_id"]) == str(patient_id)
             ):
                 return existing
+        defaults = caregiver_preset_defaults(preset)
         link = {
             "id": str(uuid4()),
             "caregiver_participant_id": caregiver_participant_id,
             "patient_id": patient_id,
+            "relationship": "observer" if defaults["preset"] == "observer" else "family",
+            "notification_policy": {
+                "preset": defaults["preset"],
+                "scopes": list(scopes or defaults["scopes"]),
+                "notification_preferences": dict(notification_preferences or defaults["notification_preferences"]),
+                "authorization_version": int(authorization_version),
+            },
+            "can_edit_plan": bool(defaults["can_edit_plan"]),
         }
         self.links.append(link)
         self.default_patient_for_participant[caregiver_participant_id] = patient_id
         return link
+
+    def get_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        for existing in self.links:
+            if (
+                str(existing.get("caregiver_participant_id")) == str(caregiver_participant_id)
+                and str(existing.get("patient_id")) == str(patient_id)
+            ):
+                link = dict(existing)
+                link.update(caregiver_link_metadata(existing))
+                return link
+        return None
+
+    def update_caregiver_link_preset(self, caregiver_participant_id: str, patient_id: str, preset: str) -> dict | None:
+        defaults = caregiver_preset_defaults(preset)
+        for existing in self.links:
+            if (
+                str(existing.get("caregiver_participant_id")) == str(caregiver_participant_id)
+                and str(existing.get("patient_id")) == str(patient_id)
+            ):
+                current = caregiver_link_metadata(existing)
+                existing["relationship"] = "observer" if defaults["preset"] == "observer" else "family"
+                existing["notification_policy"] = {
+                    "preset": defaults["preset"],
+                    "scopes": list(defaults["scopes"]),
+                    "notification_preferences": dict(defaults["notification_preferences"]),
+                    "authorization_version": int(current.get("authorization_version", 1) or 1) + 1,
+                }
+                existing["can_edit_plan"] = bool(defaults["can_edit_plan"])
+                link = dict(existing)
+                link.update(caregiver_link_metadata(existing))
+                return link
+        return None
+
+    def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
+        rows: list[dict] = []
+        for existing in self.links:
+            if str(existing.get("patient_id")) != str(patient_id):
+                continue
+            participant = self.participants.get(str(existing.get("caregiver_participant_id")), {})
+            row = dict(existing)
+            row.update(caregiver_link_metadata(existing))
+            row["display_name"] = str(participant.get("display_name", row["caregiver_participant_id"]))
+            row["phone_number"] = str(participant.get("phone_number", ""))
+            row["role"] = str(participant.get("role", "caregiver"))
+            row["active"] = bool(participant.get("active", True))
+            rows.append(row)
+        rows.sort(key=lambda item: (str(item.get("preset", "")) != "primary_caregiver", str(item.get("display_name", ""))))
+        return rows
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         cid = str(uuid4())
@@ -391,6 +630,30 @@ class InMemoryStore(Store):
             return None
         candidates.sort(key=lambda item: int(item.get("version", 0)), reverse=True)
         return dict(candidates[0])
+
+    def list_schedulable_patients(self) -> list[str]:
+        active_patient_ids = {
+            str(plan.get("patient_id"))
+            for plan in self.care_plans.values()
+            if str(plan.get("status", "")) == "active"
+        }
+        schedulable: list[str] = []
+        seen: set[str] = set()
+        for patient_id in active_patient_ids:
+            if not patient_id or patient_id in seen:
+                continue
+            linked_active = False
+            for link in self.links:
+                if str(link.get("patient_id")) != patient_id:
+                    continue
+                participant = self.participants.get(str(link.get("caregiver_participant_id")))
+                if participant and participant.get("active", False):
+                    linked_active = True
+                    break
+            if linked_active:
+                schedulable.append(patient_id)
+                seen.add(patient_id)
+        return schedulable
 
     def get_win_binding(self, win_instance_id: str) -> dict | None:
         instance = self.win_instances.get(str(win_instance_id))
@@ -592,6 +855,24 @@ class InMemoryStore(Store):
         rows: list[CaregiverVerificationRequest] = []
         for row in self.caregiver_verification_requests.values():
             if _normalize_phone(str(row["patient_phone_number"])) != normalized:
+                continue
+            if str(row["status"]) != "pending":
+                continue
+            if _ensure_dt(row["expires_at"]) <= now:
+                row["status"] = "expired"
+                row["resolved_at"] = now
+                row["resolution_note"] = "expired"
+                continue
+            rows.append(CaregiverVerificationRequest.model_validate(row))
+        rows.sort(key=lambda item: item.id)
+        return rows
+
+    def list_pending_verifications_for_caregiver_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        normalized = _normalize_phone(phone_number)
+        now = datetime.now(UTC)
+        rows: list[CaregiverVerificationRequest] = []
+        for row in self.caregiver_verification_requests.values():
+            if _normalize_phone(str(row["caregiver_phone_number"])) != normalized:
                 continue
             if str(row["status"]) != "pending":
                 continue
@@ -882,7 +1163,45 @@ class InMemoryStore(Store):
         if idempotency_key in self.message_idempotency:
             return False
         self.message_idempotency.add(idempotency_key)
+        self.message_events.append(
+            {
+                "tenant_id": str(tenant_id),
+                "patient_id": str(patient_id),
+                "participant_id": str(participant_id) if participant_id is not None else None,
+                "direction": str(direction),
+                "channel": str(channel),
+                "message_type": str(message_type),
+                "body": str(body),
+                "structured_payload": dict(payload or {}),
+                "correlation_id": str(correlation_id),
+                "idempotency_key": str(idempotency_key),
+                "created_at": datetime.now(UTC),
+            }
+        )
         return True
+
+    def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict | None:
+        matches = [
+            event
+            for event in self.message_events
+            if str(event.get("participant_id") or "") == str(participant_id)
+            and str(event.get("patient_id") or "") == str(patient_id)
+            and str(event.get("direction") or "") == "outbound"
+            and str(event.get("message_type") or "") == "scheduled_reminder"
+        ]
+        if not matches:
+            return None
+        latest = sorted(matches, key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=UTC))[-1]
+        payload = dict(latest.get("structured_payload") or {})
+        return {
+            "participant_id": str(participant_id),
+            "patient_id": str(patient_id),
+            "win_instance_id": str(payload.get("win_instance_id", "")),
+            "title": str(payload.get("title", "")),
+            "scheduled_start": payload.get("scheduled_start"),
+            "correlation_id": str(latest.get("correlation_id", "")),
+            "created_at": latest.get("created_at").isoformat() if latest.get("created_at") else "",
+        }
 
     def create_personalization_rule(
         self,
@@ -1003,27 +1322,212 @@ class PostgresStore(Store):
                 "active": bool(data["active"]),
             }
 
-    def link_caregiver(self, caregiver_participant_id: str, patient_id: str) -> dict:
+    def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
+        existing = self.get_person_identity_by_phone(payload.phone_number)
+        if existing is not None:
+            return existing
+        sql = """
+        INSERT INTO person_identities
+        (primary_phone_number, normalized_phone_number, display_name, preferred_channel, preferred_language, active)
+        VALUES (%(primary_phone_number)s, %(normalized_phone_number)s, %(display_name)s, %(preferred_channel)s, %(preferred_language)s, %(active)s)
+        RETURNING id, primary_phone_number, normalized_phone_number, display_name, preferred_channel, preferred_language, active
+        """
+        params = {
+            "primary_phone_number": payload.phone_number,
+            "normalized_phone_number": _normalize_phone(payload.phone_number),
+            "display_name": payload.display_name,
+            "preferred_channel": payload.preferred_channel,
+            "preferred_language": payload.preferred_language,
+            "active": payload.active,
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return _row_dict(cur, cur.fetchone())
+
+    def get_person_identity_by_phone(self, phone_number: str) -> dict | None:
+        sql = """
+        SELECT id, primary_phone_number, normalized_phone_number, display_name, preferred_channel, preferred_language, active
+        FROM person_identities
+        WHERE normalized_phone_number = %(normalized_phone_number)s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"normalized_phone_number": _normalize_phone(phone_number)})
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
+    def create_tenant_membership(self, payload: TenantMembershipCreate) -> dict:
+        existing = self.get_tenant_membership(payload.tenant_id, payload.person_identity_id)
+        if existing is not None:
+            return existing
+        sql = """
+        INSERT INTO tenant_memberships
+        (tenant_id, person_identity_id, membership_type, display_name, membership_status)
+        VALUES (%(tenant_id)s, %(person_identity_id)s, %(membership_type)s, %(display_name)s, %(membership_status)s)
+        RETURNING id, tenant_id, person_identity_id, membership_type, display_name, membership_status
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, payload.model_dump(mode="json"))
+            return _row_dict(cur, cur.fetchone())
+
+    def get_tenant_membership(self, tenant_id: str, person_identity_id: str) -> dict | None:
+        sql = """
+        SELECT id, tenant_id, person_identity_id, membership_type, display_name, membership_status
+        FROM tenant_memberships
+        WHERE tenant_id = %(tenant_id)s
+          AND person_identity_id = %(person_identity_id)s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"tenant_id": tenant_id, "person_identity_id": person_identity_id})
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
+    def list_tenant_memberships_for_person(self, person_identity_id: str) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, person_identity_id, membership_type, display_name, membership_status
+        FROM tenant_memberships
+        WHERE person_identity_id = %(person_identity_id)s
+        ORDER BY tenant_id ASC, display_name ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"person_identity_id": person_identity_id})
+            return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def link_caregiver(
+        self,
+        caregiver_participant_id: str,
+        patient_id: str,
+        *,
+        preset: str = "primary_caregiver",
+        scopes: list[str] | None = None,
+        notification_preferences: dict | None = None,
+        authorization_version: int = 1,
+    ) -> dict:
         find_sql = """
-        SELECT id, caregiver_participant_id, patient_id
+        SELECT id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan
         FROM caregiver_patient_links
         WHERE caregiver_participant_id = %(caregiver_participant_id)s
           AND patient_id = %(patient_id)s
         LIMIT 1
         """
         sql = """
-        INSERT INTO caregiver_patient_links (caregiver_participant_id, patient_id)
-        VALUES (%(caregiver_participant_id)s, %(patient_id)s)
-        RETURNING id, caregiver_participant_id, patient_id
+        INSERT INTO caregiver_patient_links (caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan)
+        VALUES (%(caregiver_participant_id)s, %(patient_id)s, %(relationship)s, %(notification_policy)s::jsonb, %(can_edit_plan)s)
+        RETURNING id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan
         """
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
-            params = {"caregiver_participant_id": caregiver_participant_id, "patient_id": patient_id}
+            defaults = caregiver_preset_defaults(preset)
+            params = {
+                "caregiver_participant_id": caregiver_participant_id,
+                "patient_id": patient_id,
+                "relationship": "observer" if defaults["preset"] == "observer" else "family",
+                "notification_policy": json.dumps(
+                    {
+                        "preset": defaults["preset"],
+                        "scopes": list(scopes or defaults["scopes"]),
+                        "notification_preferences": dict(notification_preferences or defaults["notification_preferences"]),
+                        "authorization_version": int(authorization_version),
+                    }
+                ),
+                "can_edit_plan": bool(defaults["can_edit_plan"]),
+            }
             cur.execute(find_sql, params)
             existing = cur.fetchone()
             if existing is not None:
-                return _row_dict(cur, existing)
+                row = _row_dict(cur, existing)
+                row.update(caregiver_link_metadata(row))
+                return row
             cur.execute(sql, params)
-            return _row_dict(cur, cur.fetchone())
+            row = _row_dict(cur, cur.fetchone())
+            row.update(caregiver_link_metadata(row))
+            return row
+
+    def get_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        sql = """
+        SELECT id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan
+        FROM caregiver_patient_links
+        WHERE caregiver_participant_id = %s
+          AND patient_id = %s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (caregiver_participant_id, patient_id))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            data.update(caregiver_link_metadata(data))
+            return data
+
+    def update_caregiver_link_preset(self, caregiver_participant_id: str, patient_id: str, preset: str) -> dict | None:
+        current = self.get_caregiver_link(caregiver_participant_id, patient_id)
+        if current is None:
+            return None
+        defaults = caregiver_preset_defaults(preset)
+        authorization_version = int(current.get("authorization_version", 1) or 1) + 1
+        sql = """
+        UPDATE caregiver_patient_links
+        SET relationship = %(relationship)s,
+            notification_policy = %(notification_policy)s::jsonb,
+            can_edit_plan = %(can_edit_plan)s
+        WHERE caregiver_participant_id = %(caregiver_participant_id)s
+          AND patient_id = %(patient_id)s
+        RETURNING id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan
+        """
+        params = {
+            "caregiver_participant_id": caregiver_participant_id,
+            "patient_id": patient_id,
+            "relationship": "observer" if defaults["preset"] == "observer" else "family",
+            "notification_policy": json.dumps(
+                {
+                    "preset": defaults["preset"],
+                    "scopes": list(defaults["scopes"]),
+                    "notification_preferences": dict(defaults["notification_preferences"]),
+                    "authorization_version": authorization_version,
+                }
+            ),
+            "can_edit_plan": bool(defaults["can_edit_plan"]),
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            data.update(caregiver_link_metadata(data))
+            return data
+
+    def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
+        sql = """
+        SELECT cpl.id,
+               cpl.caregiver_participant_id,
+               cpl.patient_id,
+               cpl.relationship,
+               cpl.notification_policy,
+               cpl.can_edit_plan,
+               p.display_name,
+               p.phone_number,
+               p.role,
+               p.active
+        FROM caregiver_patient_links cpl
+        JOIN participants p ON p.id = cpl.caregiver_participant_id
+        WHERE cpl.patient_id = %s
+        ORDER BY p.display_name ASC, p.phone_number ASC
+        """
+        rows: list[dict] = []
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (patient_id,))
+            for row in cur.fetchall():
+                data = _row_dict(cur, row)
+                data.update(caregiver_link_metadata(data))
+                rows.append(data)
+        rows.sort(key=lambda item: (str(item.get("preset", "")) != "primary_caregiver", str(item.get("display_name", ""))))
+        return rows
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         sql = """
@@ -1129,6 +1633,20 @@ class PostgresStore(Store):
             if row is None:
                 return None
             return _row_dict(cur, row)
+
+    def list_schedulable_patients(self) -> list[str]:
+        sql = """
+        SELECT DISTINCT cp.patient_id
+        FROM care_plans cp
+        JOIN caregiver_patient_links cpl ON cpl.patient_id = cp.patient_id
+        JOIN participants p ON p.id = cpl.caregiver_participant_id
+        WHERE cp.status = 'active'
+          AND p.active = true
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+            return [str(row[0]) for row in rows if row and row[0]]
 
     def get_win_binding(self, win_instance_id: str) -> dict | None:
         sql = """
@@ -1449,6 +1967,23 @@ class PostgresStore(Store):
         FROM caregiver_verification_requests
         WHERE status = 'pending'
           AND regexp_replace(replace(patient_phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
+              = regexp_replace(%(phone)s, '[^0-9+]', '', 'g')
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"phone": normalized})
+            return [self._verification_row(cur, row) for row in cur.fetchall()]
+
+    def list_pending_verifications_for_caregiver_phone(self, phone_number: str) -> list[CaregiverVerificationRequest]:
+        self._expire_verification_requests()
+        normalized = _normalize_phone(phone_number)
+        sql = """
+        SELECT id, tenant_id, caregiver_participant_id, patient_id, patient_participant_id,
+               caregiver_name, caregiver_phone_number, patient_name, patient_phone_number, relationship, approval_code,
+               status, expires_at, send_attempt_count, last_sent_at, resolved_at, resolution_note
+        FROM caregiver_verification_requests
+        WHERE status = 'pending'
+          AND regexp_replace(replace(caregiver_phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
               = regexp_replace(%(phone)s, '[^0-9+]', '', 'g')
         ORDER BY created_at ASC
         """
@@ -1803,6 +2338,38 @@ class PostgresStore(Store):
                 ),
             )
             return cur.rowcount > 0
+
+    def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict | None:
+        sql = """
+        SELECT participant_id,
+               patient_id,
+               structured_payload,
+               correlation_id,
+               created_at
+        FROM message_events
+        WHERE participant_id = %s
+          AND patient_id = %s
+          AND direction = 'outbound'
+          AND message_type = 'scheduled_reminder'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (participant_id, patient_id))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            data = _row_dict(cur, row)
+            payload = dict(data.get("structured_payload") or {})
+            return {
+                "participant_id": str(data.get("participant_id") or participant_id),
+                "patient_id": str(data.get("patient_id") or patient_id),
+                "win_instance_id": str(payload.get("win_instance_id", "")),
+                "title": str(payload.get("title", "")),
+                "scheduled_start": payload.get("scheduled_start"),
+                "correlation_id": str(data.get("correlation_id", "")),
+                "created_at": data.get("created_at").isoformat() if data.get("created_at") else "",
+            }
 
     def create_personalization_rule(
         self,

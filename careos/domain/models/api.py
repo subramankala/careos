@@ -34,6 +34,22 @@ class ParticipantCreate(BaseModel):
     active: bool = True
 
 
+class PersonIdentityCreate(BaseModel):
+    phone_number: str
+    display_name: str = ""
+    preferred_channel: str = "whatsapp"
+    preferred_language: str = "en"
+    active: bool = True
+
+
+class TenantMembershipCreate(BaseModel):
+    tenant_id: str
+    person_identity_id: str
+    membership_type: str = "mixed_member"
+    display_name: str
+    membership_status: str = "active"
+
+
 class CaregiverLinkCreate(BaseModel):
     caregiver_participant_id: str
     patient_id: str
