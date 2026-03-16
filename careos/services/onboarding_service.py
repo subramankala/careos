@@ -945,6 +945,7 @@ class OnboardingService:
         if identity is not None and participant_record is not None:
             tenant_id = identity.tenant_id
             participant_id = participant_record["id"]
+            self.store.ensure_identity_membership_for_participant(participant_id)
         else:
             tenant = self.store.create_tenant(
                 TenantCreate(
@@ -967,6 +968,7 @@ class OnboardingService:
                 )
             )
             participant_id = str(participant["id"])
+            self.store.ensure_identity_membership_for_participant(participant_id)
 
         patient = self.store.create_patient(
             PatientCreate(
@@ -999,6 +1001,7 @@ class OnboardingService:
         if identity is not None and sender_participant is not None:
             tenant_id = identity.tenant_id
             caregiver_participant_id = str(sender_participant["id"])
+            self.store.ensure_identity_membership_for_participant(caregiver_participant_id)
         else:
             tenant = self.store.create_tenant(
                 TenantCreate(
@@ -1021,6 +1024,7 @@ class OnboardingService:
                 )
             )
             caregiver_participant_id = str(caregiver["id"])
+            self.store.ensure_identity_membership_for_participant(caregiver_participant_id)
 
         existing_pending = self.store.get_pending_verification_for_caregiver(caregiver_participant_id)
         if existing_pending is not None:
@@ -1045,6 +1049,7 @@ class OnboardingService:
 
         if existing_patient_participant is not None:
             patient_participant_id = str(existing_patient_participant["id"])
+            self.store.ensure_identity_membership_for_participant(patient_participant_id)
         else:
             patient_participant = self.store.create_participant(
                 ParticipantCreate(
@@ -1058,6 +1063,7 @@ class OnboardingService:
                 )
             )
             patient_participant_id = str(patient_participant["id"])
+            self.store.ensure_identity_membership_for_participant(patient_participant_id)
 
         ttl_hours = max(int(settings.onboarding_verification_ttl_hours), 1)
         request = self.store.create_caregiver_verification_request(
@@ -1106,9 +1112,11 @@ class OnboardingService:
             return None, "Could not resolve the patient or caregiver phone for this invite."
         if self._normalize_phone_input(caregiver_phone) == normalized_sender:
             return None, "You are already linked to this patient. Invite a different caregiver number."
+        self.store.ensure_identity_membership_for_participant(patient_participant_id)
 
         existing_caregiver = self.store.find_participant_record_by_phone(caregiver_phone)
         if existing_caregiver is not None and str(existing_caregiver["tenant_id"]) != tenant_id:
+            self.store.ensure_identity_membership_for_participant(str(existing_caregiver["id"]))
             return (
                 None,
                 "That WhatsApp number already belongs to a different CareOS family workspace. "
@@ -1121,6 +1129,7 @@ class OnboardingService:
         if existing_caregiver is not None:
             caregiver_participant_id = str(existing_caregiver["id"])
             caregiver_name = str(existing_caregiver.get("display_name") or "Caregiver")
+            self.store.ensure_identity_membership_for_participant(caregiver_participant_id)
             if self.store.get_caregiver_link(caregiver_participant_id, patient_id) is not None:
                 return None, f"{caregiver_phone} is already linked to {patient_name}."
             existing_pending = self.store.get_pending_verification_for_caregiver(caregiver_participant_id)
@@ -1140,6 +1149,7 @@ class OnboardingService:
             )
             caregiver_participant_id = str(caregiver["id"])
             caregiver_name = str(caregiver["display_name"])
+            self.store.ensure_identity_membership_for_participant(caregiver_participant_id)
 
         ttl_hours = max(int(settings.onboarding_verification_ttl_hours), 1)
         request = self.store.create_caregiver_verification_request(

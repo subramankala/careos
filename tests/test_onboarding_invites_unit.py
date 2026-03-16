@@ -68,6 +68,8 @@ def test_patient_invite_flow_creates_observer_link_after_approval() -> None:
     linked = store.get_caregiver_link(str(caregiver["id"]), seeded["patient_id"])
     assert linked is not None
     assert str(linked.get("notification_policy", {}).get("preset")) == "observer"
+    assert store.get_person_identity_by_phone(patient_phone) is not None
+    assert store.get_person_identity_by_phone(caregiver_phone) is not None
 
 
 def test_patient_can_list_and_cancel_pending_invites() -> None:
@@ -150,3 +152,4 @@ def test_patient_invite_explains_cross_tenant_phone_conflict() -> None:
     reply = _send(service, store, patient_phone, "observer")
     assert "different CareOS family workspace" in reply
     assert "one phone can only belong to one tenant" in reply
+    assert store.get_person_identity_by_phone(caregiver_phone) is not None

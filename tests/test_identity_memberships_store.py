@@ -1,5 +1,6 @@
 from careos.db.repositories.store import InMemoryStore
-from careos.domain.models.api import PersonIdentityCreate, TenantCreate, TenantMembershipCreate
+from careos.domain.enums.core import Role
+from careos.domain.models.api import ParticipantCreate, PersonIdentityCreate, TenantCreate, TenantMembershipCreate
 
 
 def test_store_creates_global_identity_once_per_phone() -> None:
@@ -83,3 +84,22 @@ def test_store_deduplicates_membership_within_same_tenant() -> None:
     )
 
     assert first["id"] == second["id"]
+
+
+def test_store_backfills_identity_membership_for_existing_participant() -> None:
+    store = InMemoryStore()
+    tenant = store.create_tenant(TenantCreate(name="Family"))
+    participant = store.create_participant(
+        ParticipantCreate(
+            tenant_id=tenant["id"],
+            role=Role.CAREGIVER,
+            display_name="Existing Caregiver",
+            phone_number="whatsapp:+15559990000",
+        )
+    )
+
+    result = store.ensure_identity_membership_for_participant(participant["id"])
+
+    assert result["participant"]["person_identity_id"] == result["person_identity"]["id"]
+    assert result["participant"]["tenant_membership_id"] == result["tenant_membership"]["id"]
+    assert result["tenant_membership"]["tenant_id"] == tenant["id"]

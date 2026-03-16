@@ -119,6 +119,10 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_participant_record(self, participant_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
         raise NotImplementedError
 
@@ -136,6 +140,10 @@ class Store(ABC):
 
     @abstractmethod
     def list_tenant_memberships_for_person(self, person_identity_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def ensure_identity_membership_for_participant(self, participant_id: str) -> dict:
         raise NotImplementedError
 
     @abstractmethod
@@ -430,6 +438,12 @@ class InMemoryStore(Store):
             "active": bool(participant["active"]),
         }
 
+    def get_participant_record(self, participant_id: str) -> dict | None:
+        participant = self.participants.get(str(participant_id))
+        if participant is None:
+            return None
+        return dict(participant)
+
     def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
         existing = self.get_person_identity_by_phone(payload.phone_number)
         if existing is not None:
@@ -476,6 +490,42 @@ class InMemoryStore(Store):
         ]
         rows.sort(key=lambda item: (str(item.get("tenant_id", "")), str(item.get("display_name", ""))))
         return rows
+
+    def ensure_identity_membership_for_participant(self, participant_id: str) -> dict:
+        participant = self.participants.get(str(participant_id))
+        if participant is None:
+            raise ValueError("participant not found")
+        identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
+        if identity is None:
+            identity = self.create_person_identity(
+                PersonIdentityCreate(
+                    phone_number=str(participant["phone_number"]),
+                    display_name=str(participant.get("display_name", "")),
+                    preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
+                    preferred_language=str(participant.get("preferred_language", "en")),
+                    active=bool(participant.get("active", True)),
+                )
+            )
+        membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
+        membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
+        if membership is None:
+            membership = self.create_tenant_membership(
+                TenantMembershipCreate(
+                    tenant_id=str(participant["tenant_id"]),
+                    person_identity_id=str(identity["id"]),
+                    membership_type=membership_type,
+                    display_name=str(participant.get("display_name", "")),
+                    membership_status="active" if bool(participant.get("active", True)) else "inactive",
+                )
+            )
+        participant["person_identity_id"] = str(identity["id"])
+        participant["tenant_membership_id"] = str(membership["id"])
+        self.participants[str(participant_id)] = participant
+        return {
+            "participant": dict(participant),
+            "person_identity": dict(identity),
+            "tenant_membership": dict(membership),
+        }
 
     def link_caregiver(
         self,
@@ -1322,6 +1372,21 @@ class PostgresStore(Store):
                 "active": bool(data["active"]),
             }
 
+    def get_participant_record(self, participant_id: str) -> dict | None:
+        sql = """
+        SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active,
+               person_identity_id, tenant_membership_id
+        FROM participants
+        WHERE id = %(participant_id)s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, {"participant_id": participant_id})
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_dict(cur, row)
+
     def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
         existing = self.get_person_identity_by_phone(payload.phone_number)
         if existing is not None:
@@ -1397,6 +1462,57 @@ class PostgresStore(Store):
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, {"person_identity_id": person_identity_id})
             return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def ensure_identity_membership_for_participant(self, participant_id: str) -> dict:
+        participant = self.get_participant_record(participant_id)
+        if participant is None:
+            raise ValueError("participant not found")
+        identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
+        if identity is None:
+            identity = self.create_person_identity(
+                PersonIdentityCreate(
+                    phone_number=str(participant["phone_number"]),
+                    display_name=str(participant.get("display_name", "")),
+                    preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
+                    preferred_language=str(participant.get("preferred_language", "en")),
+                    active=bool(participant.get("active", True)),
+                )
+            )
+        membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
+        membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
+        if membership is None:
+            membership = self.create_tenant_membership(
+                TenantMembershipCreate(
+                    tenant_id=str(participant["tenant_id"]),
+                    person_identity_id=str(identity["id"]),
+                    membership_type=membership_type,
+                    display_name=str(participant.get("display_name", "")),
+                    membership_status="active" if bool(participant.get("active", True)) else "inactive",
+                )
+            )
+        sql = """
+        UPDATE participants
+        SET person_identity_id = %(person_identity_id)s,
+            tenant_membership_id = %(tenant_membership_id)s
+        WHERE id = %(participant_id)s
+        RETURNING id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active,
+                  person_identity_id, tenant_membership_id
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                {
+                    "participant_id": participant_id,
+                    "person_identity_id": identity["id"],
+                    "tenant_membership_id": membership["id"],
+                },
+            )
+            updated_participant = _row_dict(cur, cur.fetchone())
+        return {
+            "participant": updated_participant,
+            "person_identity": dict(identity),
+            "tenant_membership": dict(membership),
+        }
 
     def link_caregiver(
         self,
