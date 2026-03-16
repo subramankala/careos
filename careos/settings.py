@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     scheduler_poll_seconds: int = 30
     scheduler_patient_ids: str = ""
     enable_scheduler_whatsapp_push: bool = False
+    enable_scheduler_status_alerts: bool = True
+    scheduler_low_adherence_threshold: float = 50.0
+    scheduler_critical_missed_grace_minutes: int = 30
+    scheduler_daily_summary_hour_local: int = 20
 
     conversation_engine: str = "deterministic"
     openclaw_base_url: str = ""

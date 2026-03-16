@@ -40,6 +40,13 @@ class GatewayPendingActionRequest(BaseModel):
     expires_at: datetime
 
 
+class CaregiverPresetUpdateRequest(BaseModel):
+    actor_id: str
+    patient_id: str
+    caregiver_participant_id: str
+    preset: str
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -171,6 +178,9 @@ def dashboard_access(actor_id: str = Query(...), patient_id: str = Query(...), t
     linked_patients = context.identity_service.list_linked_patients(actor_id)
     if not any(item.patient_id == patient_id and item.tenant_id == tenant_id for item in linked_patients):
         raise HTTPException(status_code=404, detail="active caregiver link not found")
+    link = context.store.get_caregiver_link(actor_id, patient_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="caregiver link metadata not found")
     return {
         "authorization_id": f"caregiver-link:{actor_id}:{patient_id}",
         "tenant_id": tenant_id,
@@ -178,17 +188,56 @@ def dashboard_access(actor_id: str = Query(...), patient_id: str = Query(...), t
         "actor_id": actor_id,
         "actor_type": "caregiver",
         "granted_by": patient_id,
-        "scopes": [
-            "view_dashboard",
-            "view_escalations",
-            "view_medications",
-            "view_recent_events",
-            "view_criticality",
-        ],
+        "preset": str(link.get("preset", "primary_caregiver")),
+        "scopes": list(link.get("scopes", [])),
         "status": "active",
         "effective_at": datetime.now(UTC).isoformat(),
         "revoked_at": None,
-        "authorization_version": 1,
+        "authorization_version": int(link.get("authorization_version", 1) or 1),
+    }
+
+
+@router.get("/internal/caregiver-links")
+def caregiver_links(patient_id: str = Query(...)) -> dict:
+    links = context.store.list_caregiver_links_for_patient(patient_id)
+    return {
+        "patient_id": patient_id,
+        "links": [
+            {
+                "caregiver_participant_id": str(link.get("caregiver_participant_id", "")),
+                "display_name": str(link.get("display_name", link.get("caregiver_participant_id", ""))),
+                "phone_number": str(link.get("phone_number", "")),
+                "preset": str(link.get("preset", "primary_caregiver")),
+                "scopes": list(link.get("scopes", [])),
+                "notification_preferences": dict(link.get("notification_preferences", {})),
+                "authorization_version": int(link.get("authorization_version", 1) or 1),
+                "active": bool(link.get("active", True)),
+            }
+            for link in links
+        ],
+    }
+
+
+@router.post("/internal/caregiver-links/preset")
+def update_caregiver_link_preset(payload: CaregiverPresetUpdateRequest) -> dict:
+    actor_link = context.store.get_caregiver_link(payload.actor_id, payload.patient_id)
+    if actor_link is None or not bool(actor_link.get("can_edit_plan", False)):
+        raise HTTPException(status_code=403, detail="actor is not allowed to manage caregiver presets")
+    updated = context.store.update_caregiver_link_preset(
+        payload.caregiver_participant_id,
+        payload.patient_id,
+        payload.preset,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="caregiver link not found")
+    return {
+        "caregiver_participant_id": str(updated.get("caregiver_participant_id", "")),
+        "patient_id": str(updated.get("patient_id", "")),
+        "preset": str(updated.get("preset", "primary_caregiver")),
+        "scopes": list(updated.get("scopes", [])),
+        "notification_preferences": dict(updated.get("notification_preferences", {})),
+        "authorization_version": int(updated.get("authorization_version", 1) or 1),
+        "can_edit_plan": bool(updated.get("can_edit_plan", False)),
     }
 
 
@@ -245,6 +294,14 @@ def win_binding(win_instance_id: str = Query(...)) -> dict:
         "flexibility": str(binding.get("flexibility", "flexible")),
         "recurrence_type": str(binding.get("recurrence_type", "one_off")),
     }
+
+
+@router.get("/internal/reminders/latest-context")
+def latest_reminder_context(participant_id: str = Query(...), patient_id: str = Query(...)) -> dict:
+    reminder = context.store.get_latest_scheduled_reminder_context(participant_id, patient_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="scheduled reminder context not found")
+    return reminder
 
 
 @router.get("/internal/gateway/pending-action")

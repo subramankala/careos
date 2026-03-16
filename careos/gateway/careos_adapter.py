@@ -65,6 +65,18 @@ class CareOSAdapter:
         encoded = quote(str(win_instance_id), safe="")
         return self._request(f"/internal/wins/binding?win_instance_id={encoded}")
 
+    def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict[str, Any] | None:
+        try:
+            encoded_participant = quote(str(participant_id), safe="")
+            encoded_patient = quote(str(patient_id), safe="")
+            return self._request(
+                f"/internal/reminders/latest-context?participant_id={encoded_participant}&patient_id={encoded_patient}"
+            )
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
     def get_pending_gateway_action(self, pending_key: str) -> dict[str, Any] | None:
         encoded = quote(str(pending_key), safe="")
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from careos.app_context import context
 from careos.db.connection import get_connection
@@ -19,13 +20,15 @@ logger = get_logger("scheduler_worker")
 
 def _patient_ids() -> list[str]:
     raw = settings.scheduler_patient_ids or os.getenv("CAREOS_SCHEDULER_PATIENT_IDS", "")
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    if raw.strip():
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return context.store.list_schedulable_patients()
 
 
-def _recipient_endpoints(patient_id: str) -> list[tuple[str, str]]:
+def _recipient_endpoints(patient_id: str) -> list[dict]:
     store = context.store
     if isinstance(store, InMemoryStore):
-        endpoints: list[tuple[str, str]] = []
+        endpoints: list[dict] = []
         seen: set[tuple[str, str]] = set()
         for link in store.links:
             if str(link["patient_id"]) != str(patient_id):
@@ -33,30 +36,72 @@ def _recipient_endpoints(patient_id: str) -> list[tuple[str, str]]:
             participant = store.participants.get(str(link["caregiver_participant_id"]))
             if not participant or not participant.get("active", False):
                 continue
+            if str(participant.get("role", "")) != "caregiver":
+                continue
             phone = str(participant.get("phone_number", "")).strip()
             if not phone:
                 continue
             endpoint = (str(participant["id"]), phone)
             if endpoint in seen:
                 continue
-            endpoints.append(endpoint)
+            endpoints.append(
+                {
+                    "participant_id": str(participant["id"]),
+                    "phone_number": phone,
+                    "link": store.get_caregiver_link(str(participant["id"]), patient_id) or {},
+                }
+            )
             seen.add(endpoint)
         return endpoints
 
     if isinstance(store, PostgresStore):
         sql = """
-        SELECT p.id, p.phone_number
+        SELECT p.id, p.phone_number, cpl.relationship, cpl.notification_policy, cpl.can_edit_plan
         FROM caregiver_patient_links cpl
         JOIN participants p ON p.id = cpl.caregiver_participant_id
         WHERE cpl.patient_id = %s
           AND p.active = true
+          AND p.role = 'caregiver'
         """
         with get_connection(store.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (patient_id,))
             rows = cur.fetchall()
-            return [(str(row[0]), str(row[1])) for row in rows if row[1]]
+            endpoints: list[dict] = []
+            for row in rows:
+                if not row[1]:
+                    continue
+                link = {
+                    "caregiver_participant_id": str(row[0]),
+                    "patient_id": patient_id,
+                    "relationship": row[2],
+                    "notification_policy": row[3] or {},
+                    "can_edit_plan": bool(row[4]),
+                }
+                from careos.db.repositories.store import caregiver_link_metadata
+
+                link.update(caregiver_link_metadata(link))
+                endpoints.append(
+                    {
+                        "participant_id": str(row[0]),
+                        "phone_number": str(row[1]),
+                        "link": link,
+                    }
+                )
+            return endpoints
 
     return []
+
+
+def _notification_allowed(link: dict, notification_kind: str) -> bool:
+    preferences = dict((link.get("link") or {}).get("notification_preferences") or {})
+    mapping = {
+        "due_reminders": "due_reminders",
+        "critical_alerts": "critical_alerts",
+        "daily_summary": "daily_summary",
+        "low_adherence_alerts": "low_adherence_alerts",
+    }
+    key = mapping[notification_kind]
+    return bool(preferences.get(key, False))
 
 
 def _build_sender() -> TwilioWhatsAppSender | None:
@@ -74,6 +119,135 @@ def _build_sender() -> TwilioWhatsAppSender | None:
     except ValueError:
         logger.warning("scheduler_push_disabled_invalid_twilio_config")
         return None
+
+
+def _send_scheduler_message(
+    *,
+    tenant_id: str,
+    patient_id: str,
+    participant_id: str,
+    phone_number: str,
+    body: str,
+    message_type: str,
+    correlation_id: str,
+    idempotency_key: str,
+    sender: TwilioWhatsAppSender | None,
+    extra_payload: dict | None = None,
+) -> bool:
+    inserted = context.store.log_message_event(
+        tenant_id=tenant_id,
+        patient_id=patient_id,
+        participant_id=participant_id,
+        direction="outbound",
+        channel="whatsapp",
+        message_type=message_type,
+        body=body,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        payload={
+            "to": phone_number,
+            "push_enabled": sender is not None,
+            **(extra_payload or {}),
+        },
+    )
+    if not inserted:
+        return False
+    if sender is not None:
+        try:
+            sid = sender.send_text(to_number=phone_number, body=body)
+            logger.info(
+                "scheduler_push_sent",
+                patient_id=patient_id,
+                participant_id=participant_id,
+                message_type=message_type,
+                twilio_message_sid=sid,
+            )
+        except Exception:
+            logger.exception(
+                "scheduler_push_failed",
+                patient_id=patient_id,
+                participant_id=participant_id,
+                message_type=message_type,
+            )
+    return True
+
+
+def _status_alerts(patient_id: str, evaluated_at: datetime, timeline: list) -> list[tuple[str, str, dict]]:
+    if not settings.enable_scheduler_status_alerts:
+        return []
+    alerts: list[tuple[str, str, dict]] = []
+    profile = context.store.get_patient_profile(patient_id) or {}
+    timezone_name = str(profile.get("timezone") or settings.default_timezone)
+    local_now = evaluated_at.astimezone(ZoneInfo(timezone_name))
+    grace_minutes = max(int(settings.scheduler_critical_missed_grace_minutes), 0)
+    critical_missed = [
+        item
+        for item in timeline
+        if item.current_state == WinState.MISSED
+        and item.criticality.value == "high"
+        and (evaluated_at - item.scheduled_end).total_seconds() >= grace_minutes * 60
+    ]
+    if critical_missed:
+        titles = [item.title for item in critical_missed[:5]]
+        body = "Caregiver alert: critical wins missed today:\n" + "\n".join(f"- {title}" for title in titles)
+        if len(critical_missed) > 5:
+            body += f"\n- and {len(critical_missed) - 5} more"
+        alerts.append(
+            (
+                "critical_missed_status_alert",
+                body,
+                {
+                    "alert_kind": "critical_missed",
+                    "missed_count": len(critical_missed),
+                    "date": evaluated_at.date().isoformat(),
+                },
+            )
+        )
+
+    status_counts = context.store.status_counts(patient_id, evaluated_at)
+    adherence = context.store.adherence_summary(patient_id, evaluated_at.date())
+    score = float(adherence.get("score", 0.0))
+    activity_count = sum(int(status_counts.get(key, 0)) for key in ("completed", "due", "missed", "skipped", "pending", "delayed"))
+    if activity_count > 0 and score < float(settings.scheduler_low_adherence_threshold):
+        body = (
+            "Caregiver status alert: today's adherence is "
+            f"{score:.1f}% (completed={int(status_counts.get('completed', 0))}, "
+            f"due={int(status_counts.get('due', 0))}, missed={int(status_counts.get('missed', 0))}, "
+            f"skipped={int(status_counts.get('skipped', 0))})."
+        )
+        alerts.append(
+            (
+                "low_adherence_status_alert",
+                body,
+                {
+                    "alert_kind": "low_adherence",
+                    "score": score,
+                    "threshold": float(settings.scheduler_low_adherence_threshold),
+                    "date": evaluated_at.date().isoformat(),
+                },
+            )
+        )
+    summary_hour = int(settings.scheduler_daily_summary_hour_local)
+    if activity_count > 0 and local_now.hour >= summary_hour:
+        body = (
+            "Caregiver daily summary: "
+            f"adherence={score:.1f}%, completed={int(status_counts.get('completed', 0))}, "
+            f"due={int(status_counts.get('due', 0))}, missed={int(status_counts.get('missed', 0))}, "
+            f"skipped={int(status_counts.get('skipped', 0))}."
+        )
+        alerts.append(
+            (
+                "daily_status_summary",
+                body,
+                {
+                    "alert_kind": "daily_summary",
+                    "score": score,
+                    "date": local_now.date().isoformat(),
+                    "local_hour": local_now.hour,
+                },
+            )
+        )
+    return alerts
 
 
 def run_once(now: datetime | None = None) -> int:
@@ -106,48 +280,64 @@ def run_once(now: datetime | None = None) -> int:
                 if not recipients:
                     logger.warning("scheduler_no_recipients", patient_id=patient_id, win_instance_id=item.win_instance_id)
                     continue
-                for participant_id, phone_number in recipients:
-                    message_body = f"Reminder: {item.title} is due now."
+                for recipient in recipients:
+                    if not _notification_allowed(recipient, "due_reminders"):
+                        continue
+                    participant_id = str(recipient["participant_id"])
+                    phone_number = str(recipient["phone_number"])
+                    message_body = f"Reminder: {item.title} is due now. Reply 'Taken' once completed."
                     idempotency_key = (
                         f"sched:{item.win_instance_id}:{item.scheduled_start.isoformat()}:due_v1:{participant_id}"
                     )
-                    inserted = context.store.log_message_event(
+                    delivered = _send_scheduler_message(
                         tenant_id=tenant_id,
                         patient_id=patient_id,
                         participant_id=participant_id,
-                        direction="outbound",
-                        channel=decision.channel,
-                        message_type="scheduled_reminder",
+                        phone_number=phone_number,
                         body=message_body,
+                        message_type="scheduled_reminder",
                         correlation_id=f"sched:{patient_id}:{item.win_instance_id}:{participant_id}",
                         idempotency_key=idempotency_key,
-                        payload={
+                        sender=sender if decision.channel == "whatsapp" else None,
+                        extra_payload={
                             "tone": decision.tone,
-                            "to": phone_number,
-                            "push_enabled": sender is not None,
                             "event_policy": normalized_policy.as_payload(),
+                            "win_instance_id": str(item.win_instance_id),
+                            "title": str(item.title),
+                            "scheduled_start": item.scheduled_start.isoformat(),
                         },
                     )
-                    if not inserted:
+                    if delivered:
+                        sent += 1
+        recipients = _recipient_endpoints(patient_id)
+        if recipients:
+            for message_type, message_body, payload in _status_alerts(patient_id, evaluated_at, timeline):
+                notification_kind = (
+                    "critical_alerts"
+                    if message_type == "critical_missed_status_alert"
+                    else "daily_summary"
+                    if message_type == "daily_status_summary"
+                    else "low_adherence_alerts"
+                )
+                for recipient in recipients:
+                    if not _notification_allowed(recipient, notification_kind):
                         continue
-                    if sender is not None and decision.channel == "whatsapp":
-                        try:
-                            sid = sender.send_text(to_number=phone_number, body=message_body)
-                            logger.info(
-                                "scheduler_push_sent",
-                                patient_id=patient_id,
-                                participant_id=participant_id,
-                                win_instance_id=item.win_instance_id,
-                                twilio_message_sid=sid,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "scheduler_push_failed",
-                                patient_id=patient_id,
-                                participant_id=participant_id,
-                                win_instance_id=item.win_instance_id,
-                            )
-                    sent += 1
+                    participant_id = str(recipient["participant_id"])
+                    phone_number = str(recipient["phone_number"])
+                    delivered = _send_scheduler_message(
+                        tenant_id=tenant_id,
+                        patient_id=patient_id,
+                        participant_id=participant_id,
+                        phone_number=phone_number,
+                        body=message_body,
+                        message_type=message_type,
+                        correlation_id=f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}",
+                        idempotency_key=f"sched:{patient_id}:{message_type}:{evaluated_at.date().isoformat()}:{participant_id}",
+                        sender=sender,
+                        extra_payload=payload,
+                    )
+                    if delivered:
+                        sent += 1
     return sent
 
 
