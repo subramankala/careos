@@ -103,6 +103,8 @@ Do not start with all notification types.
 - medication due reminders are high-value for voice
 - critical missed alerts justify interruption
 - summaries over voice are noisy and lower value
+- one-way voice is much simpler to ship safely than interactive voice
+- WhatsApp reply handling already exists and can remain the action path
 
 ## Call Experience Design
 
@@ -112,33 +114,36 @@ Voice calls should be deterministic, short, and action-oriented.
 
 Example spoken prompt:
 
-`This is CareOS. It is time to take Ecosprin 75 milligrams. Press 1 if taken. Press 2 to remind me later. Press 3 to repeat this message.`
+`This is CareOS. It is time to take Ecosprin 75 milligrams. After taking it, please reply on WhatsApp with Taken. If you took multiple medicines, reply done all meds or ask for your schedule on WhatsApp.`
 
-Recommended DTMF mapping:
+Recommended MVP behavior:
 
-- `1` = complete medication
-- `2` = delay/remind later
-- `3` = repeat prompt
+- no keypad input
+- no in-call completion
+- call is informational only
+- user action happens on WhatsApp reply
 
 ### Caregiver critical missed alert call
 
 Example spoken prompt:
 
-`This is CareOS. A critical medication may have been missed for Mankala Nageswara Rao. Press 1 to acknowledge. Press 2 to hear this again.`
+`This is CareOS. A critical medication may have been missed for Mankala Nageswara Rao. Please check WhatsApp for details and reply there if needed.`
 
-Recommended DTMF mapping:
+Recommended MVP behavior:
 
-- `1` = acknowledge alert
-- `2` = repeat prompt
+- no keypad input
+- informational alert only
+- any follow-up action remains on WhatsApp
 
-### Why DTMF first
+### Why one-way voice first
 
-- deterministic
-- safer than free-form speech recognition
-- easy to test
-- lower complexity and cost
+- lowest implementation complexity
+- no TwiML `Gather` flow required
+- no call-state-to-action coupling
+- no keypad UX edge cases
+- reuses the existing WhatsApp completion path
 
-Speech AI can be added later if desired.
+DTMF or speech interaction can be added later if the one-way call channel proves useful.
 
 ## Channel Semantics
 
@@ -228,15 +233,10 @@ Voice should plug into this pipeline, not replace it.
 
 2. `Voice TwiML Route`
 - returns spoken prompt using TwiML
-- optionally starts `Gather` for keypad input
 
 3. `Voice Status Callback Route`
 - receives Twilio call lifecycle updates
 - records answered/no-answer/busy/failed
-
-4. `Voice Action Route`
-- handles `Gather` DTMF input
-- maps keypad choices to domain actions
 
 ### Suggested runtime flow
 
@@ -248,7 +248,7 @@ Voice should plug into this pipeline, not replace it.
 - voice call
 - fallback sequence
 5. delivery attempts are logged
-6. if voice call is answered and user presses a key, action is applied through the same win/action APIs
+6. user completes or acknowledges through WhatsApp reply flow if action is needed
 
 ## Twilio Voice Integration Shape
 
@@ -272,22 +272,6 @@ This route:
 - validates signed request or opaque token
 - looks up notification context
 - speaks prompt
-- gathers DTMF
-
-### Gather callback
-
-Suggested route:
-
-- `POST /voice/outbound/gather`
-
-This route:
-
-- receives pressed digits
-- resolves pending notification context
-- calls:
-  - complete win
-  - delay win
-  - acknowledge alert
 
 ### Status callback
 
@@ -423,21 +407,19 @@ Outcome:
 Scope:
 
 - voice calls for due medication reminders
-- DTMF:
-  - `1` complete
-  - `2` remind later
+- spoken reminder tells patient to reply on WhatsApp with `Taken`
+- for multiple medication cases, spoken reminder points user to `done all meds` or `schedule`
 
 Outcome:
 
-- end-to-end actionable patient voice reminders
+- end-to-end one-way patient voice reminders with WhatsApp as action path
 
 ### Phase 4. Caregiver critical missed alert voice
 
 Scope:
 
 - caregiver call on critical missed events
-- DTMF:
-  - `1` acknowledge
+- spoken alert tells caregiver to check or reply on WhatsApp
 
 Outcome:
 
@@ -469,12 +451,13 @@ Mitigation:
 
 ### 2. Ambiguous voice actions
 
-If the user says something free-form or presses no key, the system may not know what to do.
+If the voice call implies an action path that differs from WhatsApp behavior, users may be confused.
 
 Mitigation:
 
-- use DTMF only in MVP
-- fallback to text
+- keep the call one-way in MVP
+- make WhatsApp the single action surface
+- keep spoken instructions aligned with actual supported text replies
 
 ### 3. Duplicate channel delivery
 
@@ -509,7 +492,7 @@ Mitigation:
 - patient medication reminders
 - caregiver critical missed alerts
 
-2. Use DTMF only, not speech AI
+2. Use one-way voice only, not DTMF or speech AI, in MVP
 
 3. Make `both` mean fallback, not simultaneous dual-send
 
@@ -520,6 +503,6 @@ Mitigation:
 ## Suggested Next Engineering Slice After Approval
 
 1. Extend notification policy schema/API for channel preferences
-2. Add Twilio voice sender and basic TwiML route
-3. Implement patient medication reminder call flow with `Press 1 to mark complete`
-4. Add call logging and idempotency
+2. Add Twilio voice sender and basic one-way TwiML route
+3. Implement patient medication reminder call flow that directs the user back to WhatsApp
+4. Add call logging, idempotency, and fallback-to-text behavior
