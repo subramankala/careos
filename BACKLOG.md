@@ -67,6 +67,10 @@ Lower rank number means a better near-term tradeoff, not necessarily the easiest
    - Impact: medium-low
    - Implementation/test complexity: medium
    - Why: useful after feedback capture exists, but not the first operational bottleneck.
+15. WhatsApp Calling Channel For Eligible Voice Notifications
+   - Impact: medium
+   - Implementation/test complexity: high
+   - Why: could reduce delivery cost for voice-style notifications, but it depends on Twilio/Meta eligibility, user consent, and sender-country constraints.
 
 ## 1. Patient-Initiated Caregiver Invites
 
@@ -198,6 +202,43 @@ Acceptance criteria:
 - Notification preferences can be viewed and updated per caregiver link.
 - Overrides do not destroy the selected preset label.
 - Scheduler respects the updated preferences immediately.
+
+## 5A. WhatsApp Calling Channel For Eligible Voice Notifications
+
+Status: proposed
+Priority: medium
+
+Problem:
+CareOS now has a regular phone-call voice channel and WhatsApp text, but there is no WhatsApp-native calling option. If supported by the provider and sender setup, WhatsApp calling could become a lower-cost alternative to PSTN voice for selected reminders and alerts.
+
+Desired behavior:
+- CareOS can use `whatsapp_call` as an outbound notification channel for supported reminder and alert types.
+- Channel selection can distinguish between:
+  - `whatsapp_text`
+  - `phone_call`
+  - `whatsapp_call`
+  - `both` or fallback combinations where allowed
+- Only eligible users and senders are offered WhatsApp calling.
+- Users explicitly consent before business-initiated WhatsApp calls are enabled.
+
+Design notes:
+- Treat WhatsApp calling as a separate transport from PSTN voice, not just a synonym for `voice`.
+- Provider support, sender-country restrictions, and consent requirements must be enforced in product logic.
+- The system should fail closed:
+  - if a sender is not WhatsApp-calling enabled
+  - if the destination is not eligible
+  - if consent is missing
+- Keep the current PSTN phone-call path as the default voice implementation until WhatsApp calling is validated in production.
+- Logging and audit should record whether the outbound attempt used:
+  - WhatsApp text
+  - regular phone call
+  - WhatsApp call
+
+Acceptance criteria:
+- Notification preferences can represent `whatsapp_call` separately from regular phone-call voice.
+- CareOS can attempt WhatsApp calls only for users/senders that pass eligibility and consent checks.
+- Unsupported combinations fall back cleanly or are rejected with a clear reason.
+- Audit logs clearly show which channel was attempted and whether fallback occurred.
 
 ## 6. Read/Write Policy Separation For Caregiver Personas
 
