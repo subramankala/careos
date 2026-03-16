@@ -62,3 +62,19 @@ This repository uses a lightweight delivery pipeline built on GitHub issues and 
   - move to `stage:deployed`
   - validate in the live workflow
   - then move to `stage:validated`
+
+## Current Queued Next Step
+
+The next implementation slice planned for this repo is live enablement of automatic medication reminder phone calls using the existing one-way voice reminder MVP.
+
+Scope:
+- enable scheduler voice calling in runtime config
+- set the production caller ID to `+13505002080`
+- update the target notification preference for medication due reminders to `voice`
+- restart the relevant CareOS runtime services
+- trigger and verify one scheduler-driven medication reminder phone call in a real workflow
+
+Notes:
+- In the current product language, `voice` means a regular phone call, not a WhatsApp call.
+- WhatsApp remains the text and reply channel for `Taken`, `done all meds`, and other confirmation commands.
+- This slice should move to `stage:deployed` only after the runtime config and scheduler path are live, and to `stage:validated` only after a real medication reminder phone call is observed end to end.
