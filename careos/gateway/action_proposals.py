@@ -425,9 +425,12 @@ def _fallback_update_task(text: str, context: dict, timeline: list[dict]) -> Str
     duration = max(int((scheduled_end - scheduled_start).total_seconds() // 60), 30)
     tz = ZoneInfo(str(context["patient_timezone"]))
     base_local = scheduled_start.astimezone(tz)
+    now_local = datetime.now(tz)
     target_date = base_local.date()
     if "tomorrow" in lower:
-        target_date = target_date + timedelta(days=1)
+        target_date = now_local.date() + timedelta(days=1)
+    elif target_date < now_local.date():
+        target_date = now_local.date()
     start_hour, end_hour = base_local.hour, base_local.hour + max(duration // 60, 1)
     if "morning" in lower:
         start_hour, end_hour = 9, 10

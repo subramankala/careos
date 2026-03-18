@@ -757,6 +757,13 @@ class InMemoryStore(Store):
             "criticality": str(definition.get("criticality", "medium")),
             "flexibility": str(definition.get("flexibility", "flexible")),
             "recurrence_type": str(definition.get("recurrence_type", "one_off")),
+            "recurrence_interval": int(definition.get("recurrence_interval", 1) or 1),
+            "recurrence_days_of_week": list(definition.get("recurrence_days_of_week", []) or []),
+            "recurrence_until": (
+                definition.get("recurrence_until").isoformat()
+                if definition.get("recurrence_until") is not None
+                else None
+            ),
         }
 
     def resolve_participant_by_phone(self, phone_number: str) -> ParticipantIdentity | None:
@@ -1160,6 +1167,8 @@ class InMemoryStore(Store):
     def _instance_exists(self, definition_id: str, scheduled_start: datetime) -> bool:
         for instance in self.win_instances.values():
             if str(instance["win_definition_id"]) != str(definition_id):
+                continue
+            if instance.get("current_state") == WinState.SUPERSEDED:
                 continue
             if _ensure_dt(instance["scheduled_start"]) == _ensure_dt(scheduled_start):
                 return True
@@ -1847,7 +1856,10 @@ class PostgresStore(Store):
                wd.instructions,
                wd.criticality,
                wd.flexibility,
-               wd.recurrence_type
+               wd.recurrence_type,
+               wd.recurrence_interval,
+               wd.recurrence_days_of_week,
+               wd.recurrence_until
         FROM win_instances wi
         JOIN win_definitions wd ON wd.id = wi.win_definition_id
         WHERE wi.id = %s
@@ -2335,7 +2347,9 @@ class PostgresStore(Store):
                         SELECT %s, %s, %s, %s, %s
                         WHERE NOT EXISTS (
                           SELECT 1 FROM win_instances
-                          WHERE win_definition_id = %s AND scheduled_start = %s
+                          WHERE win_definition_id = %s
+                            AND scheduled_start = %s
+                            AND current_state != %s
                         )
                         """,
                         (
@@ -2346,6 +2360,7 @@ class PostgresStore(Store):
                             WinState.PENDING.value,
                             definition_id,
                             start_utc,
+                            WinState.SUPERSEDED.value,
                         ),
                     )
                     if cur.rowcount > 0:

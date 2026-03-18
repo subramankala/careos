@@ -323,6 +323,9 @@ def win_binding(win_instance_id: str = Query(...)) -> dict:
         "criticality": str(binding.get("criticality", "medium")),
         "flexibility": str(binding.get("flexibility", "flexible")),
         "recurrence_type": str(binding.get("recurrence_type", "one_off")),
+        "recurrence_interval": int(binding.get("recurrence_interval", 1) or 1),
+        "recurrence_days_of_week": list(binding.get("recurrence_days_of_week", []) or []),
+        "recurrence_until": binding.get("recurrence_until"),
     }
 
 

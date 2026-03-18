@@ -14,6 +14,8 @@ class _AdapterBase:
         self.completed_instances: list[dict] = []
         self.rescheduled_tasks: list[dict] = []
         self.superseded_instances: list[dict] = []
+        self.removed_tasks: list[dict] = []
+        self.updated_recurrences: list[dict] = []
         self.bindings: dict[str, dict] = {}
         self.timeline: list[dict] = []
         self.pending_gateway_actions: dict[str, dict] = {}
@@ -106,6 +108,9 @@ class _AdapterBase:
             "criticality": "medium",
             "flexibility": "flexible",
             "recurrence_type": "one_off",
+            "recurrence_interval": 1,
+            "recurrence_days_of_week": [],
+            "recurrence_until": None,
         })
 
     def override_recurring_task(self, *, win_instance_id: str, actor_id: str, start_at_iso: str, end_at_iso: str) -> dict:
@@ -124,6 +129,38 @@ class _AdapterBase:
             }
         )
         self.superseded_instances.append({"instance_id": win_instance_id, "actor_id": actor_id})
+        return {"ok": True}
+
+    def remove_task(self, *, win_instance_id: str, actor_id: str, supersede_active_due: bool = False) -> dict:
+        self.removed_tasks.append(
+            {
+                "instance_id": win_instance_id,
+                "actor_id": actor_id,
+                "supersede_active_due": supersede_active_due,
+            }
+        )
+        return {"ok": True}
+
+    def update_task_recurrence(
+        self,
+        *,
+        win_instance_id: str,
+        actor_id: str,
+        recurrence_type: str,
+        recurrence_interval: int = 1,
+        recurrence_days_of_week: list[int] | None = None,
+        recurrence_until: str | None = None,
+    ) -> dict:
+        self.updated_recurrences.append(
+            {
+                "instance_id": win_instance_id,
+                "actor_id": actor_id,
+                "recurrence_type": recurrence_type,
+                "recurrence_interval": recurrence_interval,
+                "recurrence_days_of_week": list(recurrence_days_of_week or []),
+                "recurrence_until": recurrence_until,
+            }
+        )
         return {"ok": True}
 
     def save_pending_gateway_action(self, *, pending_key: str, plan: dict, expires_at_iso: str) -> dict:
@@ -678,6 +715,279 @@ def test_gateway_marks_latest_reminder_target_completed_from_taken_reply(monkeyp
         assert response.status_code == 200
         assert b"Marked ecosprin 75mg as completed." in response.body
         assert adapter.completed_instances == [{"instance_id": "win-reminder-1", "actor_id": "participant-1"}]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_clarifies_taken_reply_when_multiple_due_medications_match_recent_reminders(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-med-1",
+            "title": "Ecosprin 75mg",
+            "category": "medication",
+            "criticality": "high",
+            "flexibility": "rigid",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        },
+        {
+            "win_instance_id": "win-med-2",
+            "title": "Dytor 5mg",
+            "category": "medication",
+            "criticality": "medium",
+            "flexibility": "windowed",
+            "scheduled_start": "2099-03-15T09:30:00+00:00",
+            "scheduled_end": "2099-03-15T10:00:00+00:00",
+            "current_state": "due",
+        },
+        {
+            "win_instance_id": "win-med-3",
+            "title": "Metformin",
+            "category": "medication",
+            "criticality": "medium",
+            "flexibility": "windowed",
+            "scheduled_start": "2099-03-15T10:30:00+00:00",
+            "scheduled_end": "2099-03-15T11:00:00+00:00",
+            "current_state": "due",
+        },
+    ]
+    adapter.get_latest_scheduled_reminder_context = lambda participant_id, patient_id: {  # type: ignore[method-assign]
+        "participant_id": participant_id,
+        "patient_id": patient_id,
+        "win_instance_id": "win-med-3",
+        "title": "Metformin",
+        "scheduled_start": "2099-03-15T10:30:00+00:00",
+        "correlation_id": "sched:patient-1:win-med-3:participant-1",
+        "created_at": "2099-03-15T10:30:00+00:00",
+    }
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Taken",
+                "MessageSid": "SM-gw-taken-multi-med-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"I found multiple due medications from recent reminders." in response.body
+        assert b"done all meds" in response.body
+        assert adapter.completed_instances == []
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_marks_all_due_medications_completed_from_done_all_meds(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-med-1",
+            "title": "Ecosprin 75mg",
+            "category": "medication",
+            "criticality": "high",
+            "flexibility": "rigid",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        },
+        {
+            "win_instance_id": "win-med-2",
+            "title": "Dytor 5mg",
+            "category": "medication",
+            "criticality": "medium",
+            "flexibility": "windowed",
+            "scheduled_start": "2099-03-15T09:30:00+00:00",
+            "scheduled_end": "2099-03-15T10:00:00+00:00",
+            "current_state": "due",
+        },
+        {
+            "win_instance_id": "win-routine-1",
+            "title": "Evening walk",
+            "category": "routine",
+            "criticality": "low",
+            "flexibility": "flexible",
+            "scheduled_start": "2099-03-15T18:00:00+00:00",
+            "scheduled_end": "2099-03-15T18:30:00+00:00",
+            "current_state": "due",
+        },
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "done all meds",
+                "MessageSid": "SM-gw-done-all-meds-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked 2 due medications as completed." in response.body
+        assert adapter.completed_instances == [
+            {"instance_id": "win-med-1", "actor_id": "participant-1"},
+            {"instance_id": "win-med-2", "actor_id": "participant-1"},
+        ]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_runs_structured_medication_delete_flow(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-med-1",
+            "title": "Ecosprin 75mg",
+            "category": "medication",
+            "criticality": "high",
+            "flexibility": "rigid",
+            "scheduled_start": "2099-03-15T08:30:00+00:00",
+            "scheduled_end": "2099-03-15T09:00:00+00:00",
+            "current_state": "due",
+        }
+    ]
+    adapter.bindings["win-med-1"] = {
+        "win_instance_id": "win-med-1",
+        "win_definition_id": "def-med-1",
+        "care_plan_id": "cp-1",
+        "patient_id": "patient-1",
+        "title": "Ecosprin 75mg",
+        "category": "medication",
+        "instructions": "Take with water",
+        "criticality": "high",
+        "flexibility": "rigid",
+        "recurrence_type": "daily",
+        "recurrence_interval": 1,
+        "recurrence_days_of_week": [],
+        "recurrence_until": None,
+    }
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "change 1",
+                "MessageSid": "SM-gw-med-edit-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Reply with DELETE, ONE OFF, DAILY, or DAYS mon wed fri" in response.body
+
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "delete",
+                "MessageSid": "SM-gw-med-edit-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Reply YES to delete Ecosprin 75mg" in response.body
+
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "yes",
+                "MessageSid": "SM-gw-med-edit-3",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Deleted Ecosprin 75mg." in response.body
+        assert adapter.removed_tasks == [
+            {
+                "instance_id": "win-med-1",
+                "actor_id": "participant-1",
+                "supersede_active_due": True,
+            }
+        ]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_runs_structured_medication_weekday_update_flow(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-med-2",
+            "title": "Metformin",
+            "category": "medication",
+            "criticality": "medium",
+            "flexibility": "windowed",
+            "scheduled_start": "2099-03-15T10:30:00+00:00",
+            "scheduled_end": "2099-03-15T11:00:00+00:00",
+            "current_state": "pending",
+        }
+    ]
+    adapter.bindings["win-med-2"] = {
+        "win_instance_id": "win-med-2",
+        "win_definition_id": "def-med-2",
+        "care_plan_id": "cp-1",
+        "patient_id": "patient-1",
+        "title": "Metformin",
+        "category": "medication",
+        "instructions": "Take after food",
+        "criticality": "medium",
+        "flexibility": "windowed",
+        "recurrence_type": "daily",
+        "recurrence_interval": 1,
+        "recurrence_days_of_week": [],
+        "recurrence_until": None,
+    }
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "change 1",
+                "MessageSid": "SM-gw-med-days-1",
+            }
+        )
+        assert response.status_code == 200
+
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "days mon wed fri",
+                "MessageSid": "SM-gw-med-days-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Reply YES to make Metformin recur only on Mon, Wed, Fri." in response.body
+
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "yes",
+                "MessageSid": "SM-gw-med-days-3",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Updated Metformin to recur on Mon, Wed, Fri." in response.body
+        assert adapter.updated_recurrences == [
+            {
+                "instance_id": "win-med-2",
+                "actor_id": "participant-1",
+                "recurrence_type": "weekly",
+                "recurrence_interval": 1,
+                "recurrence_days_of_week": [0, 2, 4],
+                "recurrence_until": None,
+            }
+        ]
     finally:
         settings.gateway_conversation_mode = previous_mode
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import re
 from urllib.parse import parse_qs
@@ -35,7 +35,40 @@ class PendingGatewayAction:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class PendingMedicationEdit:
+    item_no: int
+    win_instance_id: str
+    title: str
+    recurrence_type: str
+    recurrence_interval: int = 1
+    recurrence_days_of_week: list[int] = field(default_factory=list)
+    pending_action: str = ""
+    requested_days_of_week: list[int] = field(default_factory=list)
+
+
 _PENDING_ACTIONS: dict[str, PendingGatewayAction] = {}
+_PENDING_MEDICATION_EDITS: dict[str, PendingMedicationEdit] = {}
+_WEEKDAY_ALIASES = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tues": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
+_WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 openclaw_delegate = OpenClawConversationEngine(
     base_url=(settings.gateway_openclaw_base_url or settings.openclaw_base_url or "").strip(),
     timeout_seconds=settings.openclaw_timeout_seconds,
@@ -263,39 +296,270 @@ def _is_short_completion_reply(text: str) -> bool:
     }
 
 
-def _implicit_completion_reply(text: str, context: dict, today: dict) -> str | None:
-    if not _is_short_completion_reply(text):
-        return None
-    reminder_context = adapter.get_latest_scheduled_reminder_context(
-        str(context["participant_id"]),
-        str(context["patient_id"]),
-    )
-    if reminder_context is not None and str(reminder_context.get("win_instance_id", "")).strip():
-        win_instance_id = str(reminder_context["win_instance_id"])
-        title = str(reminder_context.get("title", "task")).strip() or "task"
-        adapter.complete_win(win_instance_id, str(context["participant_id"]))
-        return f"Marked {title.lower()} as completed."
+def _is_bulk_medication_completion_reply(text: str) -> bool:
+    normalized = " ".join(text.strip().lower().split())
+    return normalized in {
+        "i took them",
+        "taken all",
+        "taken all meds",
+        "took all",
+        "took all meds",
+        "done all meds",
+        "done all medications",
+    }
+
+
+def _due_actionable_items(today: dict) -> list[dict]:
     timeline = list(today.get("timeline", []))
-    actionable = [
+    return [
         item
         for item in timeline
         if str(item.get("current_state", "")).lower() in {"due", "delayed"}
     ]
+
+
+def _due_medication_items(today: dict) -> list[dict]:
+    return [
+        item
+        for item in _due_actionable_items(today)
+        if str(item.get("category", "")).lower() == "medication"
+    ]
+
+
+def _multiple_due_items_reply(actionable: list[dict], *, medications_only: bool = False) -> str:
+    lines = [
+        "I found multiple due medications from recent reminders. Reply with one of these instead:"
+        if medications_only
+        else "I found multiple due items. Reply with one of these instead:"
+    ]
+    for index, item in enumerate(actionable[:5], start=1):
+        lines.append(f"- done {index} for {item['title']}")
+    if medications_only:
+        lines.append("If you took all of the due medications, reply 'done all meds'.")
+    else:
+        lines.append("You can also ask for your schedule first.")
+    return "\n".join(lines)
+
+
+def _implicit_completion_reply(text: str, context: dict, today: dict) -> str | None:
+    if not _is_short_completion_reply(text) and not _is_bulk_medication_completion_reply(text):
+        return None
+    bulk_medication_reply = _is_bulk_medication_completion_reply(text)
+    reminder_context = adapter.get_latest_scheduled_reminder_context(
+        str(context["participant_id"]),
+        str(context["patient_id"]),
+    )
+    actionable = _due_actionable_items(today)
+    due_medications = _due_medication_items(today)
+    if bulk_medication_reply:
+        if len(due_medications) == 0:
+            return "I could not find any currently due medications to mark completed. Send 'schedule' first if needed."
+        for item in due_medications:
+            adapter.complete_win(str(item["win_instance_id"]), str(context["participant_id"]))
+        if len(due_medications) == 1:
+            return f"Marked {str(due_medications[0].get('title', 'medication')).lower()} as completed."
+        return f"Marked {len(due_medications)} due medications as completed."
+    if reminder_context is not None and str(reminder_context.get("win_instance_id", "")).strip():
+        win_instance_id = str(reminder_context["win_instance_id"])
+        title = str(reminder_context.get("title", "task")).strip() or "task"
+        matching_due_medications = [
+            item for item in due_medications if str(item.get("win_instance_id")) == win_instance_id
+        ]
+        if matching_due_medications and len(due_medications) > 1:
+            return _multiple_due_items_reply(due_medications, medications_only=True)
+        adapter.complete_win(win_instance_id, str(context["participant_id"]))
+        return f"Marked {title.lower()} as completed."
     if len(actionable) == 1:
         item = actionable[0]
         adapter.complete_win(str(item["win_instance_id"]), str(context["participant_id"]))
         return f"Marked {str(item.get('title', 'task')).lower()} as completed."
     if len(actionable) > 1:
-        lines = ["I found multiple due items. Reply with one of these instead:"]
-        for index, item in enumerate(actionable[:5], start=1):
-            lines.append(f"- done {index} for {item['title']}")
-        lines.append("You can also ask for your schedule first.")
-        return "\n".join(lines)
+        return _multiple_due_items_reply(actionable)
     return "I could not find a currently due item to mark completed. Send 'schedule' or 'done <number>'."
 
 
 def _pending_key(context: dict) -> str:
     return f"{context['tenant_id']}:{context['participant_id']}:{context['patient_id']}"
+
+
+def _store_pending_medication_edit(context: dict, pending: PendingMedicationEdit) -> None:
+    _PENDING_MEDICATION_EDITS[_pending_key(context)] = pending
+
+
+def _get_pending_medication_edit(context: dict) -> PendingMedicationEdit | None:
+    return _PENDING_MEDICATION_EDITS.get(_pending_key(context))
+
+
+def _clear_pending_medication_edit(context: dict) -> None:
+    _PENDING_MEDICATION_EDITS.pop(_pending_key(context), None)
+
+
+def _format_weekdays(days: list[int]) -> str:
+    if not days:
+        return "every day"
+    return ", ".join(_WEEKDAY_LABELS[day] for day in sorted(dict.fromkeys(days)))
+
+
+def _parse_weekdays(text: str) -> list[int] | None:
+    normalized = re.sub(r"[^a-z,\s]", " ", text.lower())
+    if "weekdays" in normalized:
+        return [0, 1, 2, 3, 4]
+    tokens = [token for token in re.split(r"[\s,]+", normalized) if token]
+    days: list[int] = []
+    for token in tokens:
+        if token in {"days", "day", "only", "on", "reply", "set", "to"}:
+            continue
+        mapped = _WEEKDAY_ALIASES.get(token)
+        if mapped is None:
+            continue
+        if mapped not in days:
+            days.append(mapped)
+    return days or None
+
+
+def _medication_edit_options_reply(title: str) -> str:
+    return (
+        f"Editing {title}. Reply with DELETE, ONE OFF, DAILY, or DAYS mon wed fri. "
+        "Reply CANCEL to stop."
+    )
+
+
+def _select_medication_for_edit(item_no: int, today: dict) -> tuple[dict | None, str | None]:
+    timeline = list(today.get("timeline", []))
+    if item_no <= 0 or item_no > len(timeline):
+        return None, "Item number is out of range. Send 'schedule' first."
+    item = dict(timeline[item_no - 1])
+    if str(item.get("category", "")).lower() != "medication":
+        return None, "That item is not a medication. Reply with a medication item number from 'schedule'."
+    return item, None
+
+
+def _start_medication_edit(text: str, context: dict, today: dict) -> str | None:
+    normalized = " ".join(text.strip().lower().split())
+    match = re.fullmatch(r"(?:change|edit|modify)\s+(\d+)(?:\s+(.*))?", normalized)
+    if match is None:
+        direct_delete = re.fullmatch(r"(?:delete|remove)\s+(\d+)", normalized)
+        if direct_delete is None:
+            return None
+        item_no = int(direct_delete.group(1))
+        immediate_action = "delete"
+    else:
+        item_no = int(match.group(1))
+        immediate_action = str(match.group(2) or "").strip()
+    item, error = _select_medication_for_edit(item_no, today)
+    if error is not None or item is None:
+        return error
+    binding = adapter.get_win_binding(str(item["win_instance_id"]))
+    pending = PendingMedicationEdit(
+        item_no=item_no,
+        win_instance_id=str(item["win_instance_id"]),
+        title=str(item.get("title", "medication")).strip() or "medication",
+        recurrence_type=str(binding.get("recurrence_type", "one_off")),
+        recurrence_interval=int(binding.get("recurrence_interval", 1) or 1),
+        recurrence_days_of_week=list(binding.get("recurrence_days_of_week", []) or []),
+    )
+    _store_pending_medication_edit(context, pending)
+    if immediate_action == "delete":
+        _store_pending_medication_edit(
+            context,
+            PendingMedicationEdit(**{**pending.__dict__, "pending_action": "delete"}),
+        )
+        return f"Reply YES to delete {pending.title}. Reply CANCEL to stop."
+    if immediate_action:
+        return _handle_pending_medication_edit(context, immediate_action)
+    return _medication_edit_options_reply(pending.title)
+
+
+def _handle_pending_medication_edit(context: dict, text: str) -> str | None:
+    pending = _get_pending_medication_edit(context)
+    if pending is None:
+        return None
+    normalized = " ".join(text.strip().lower().split())
+    if normalized in {"cancel", "stop", "never mind", "nevermind"}:
+        _clear_pending_medication_edit(context)
+        return "Okay, I cancelled the medication change."
+    if not pending.pending_action:
+        if normalized in {"delete", "remove"}:
+            _store_pending_medication_edit(
+                context,
+                PendingMedicationEdit(**{**pending.__dict__, "pending_action": "delete"}),
+            )
+            return f"Reply YES to delete {pending.title}. Reply CANCEL to stop."
+        if normalized in {"one off", "one-off", "make one off", "make one-off", "remove recurrence", "stop recurrence"}:
+            if pending.recurrence_type == "one_off":
+                _clear_pending_medication_edit(context)
+                return f"{pending.title} is already one-off."
+            _store_pending_medication_edit(
+                context,
+                PendingMedicationEdit(**{**pending.__dict__, "pending_action": "one_off"}),
+            )
+            return f"Reply YES to make {pending.title} one-off and stop future recurrence."
+        if normalized in {"daily", "every day", "everyday"}:
+            _store_pending_medication_edit(
+                context,
+                PendingMedicationEdit(**{**pending.__dict__, "pending_action": "daily"}),
+            )
+            return f"Reply YES to make {pending.title} recur daily."
+        requested_days = _parse_weekdays(normalized)
+        if requested_days is not None:
+            _store_pending_medication_edit(
+                context,
+                PendingMedicationEdit(
+                    **{
+                        **pending.__dict__,
+                        "pending_action": "days",
+                        "requested_days_of_week": requested_days,
+                    }
+                ),
+            )
+            return f"Reply YES to make {pending.title} recur only on {_format_weekdays(requested_days)}."
+        return _medication_edit_options_reply(pending.title)
+    if not is_confirmation(text):
+        return "Reply YES to confirm or CANCEL to stop."
+    actor_id = str(context["participant_id"])
+    if pending.pending_action == "delete":
+        adapter.remove_task(
+            win_instance_id=pending.win_instance_id,
+            actor_id=actor_id,
+            supersede_active_due=True,
+        )
+        _clear_pending_medication_edit(context)
+        return f"Deleted {pending.title}."
+    if pending.pending_action == "one_off":
+        adapter.update_task_recurrence(
+            win_instance_id=pending.win_instance_id,
+            actor_id=actor_id,
+            recurrence_type="one_off",
+            recurrence_interval=1,
+            recurrence_days_of_week=[],
+            recurrence_until=None,
+        )
+        _clear_pending_medication_edit(context)
+        return f"Updated {pending.title} to one-off only."
+    if pending.pending_action == "daily":
+        adapter.update_task_recurrence(
+            win_instance_id=pending.win_instance_id,
+            actor_id=actor_id,
+            recurrence_type="daily",
+            recurrence_interval=1,
+            recurrence_days_of_week=[],
+            recurrence_until=None,
+        )
+        _clear_pending_medication_edit(context)
+        return f"Updated {pending.title} to daily recurrence."
+    if pending.pending_action == "days":
+        adapter.update_task_recurrence(
+            win_instance_id=pending.win_instance_id,
+            actor_id=actor_id,
+            recurrence_type="weekly",
+            recurrence_interval=1,
+            recurrence_days_of_week=pending.requested_days_of_week,
+            recurrence_until=None,
+        )
+        _clear_pending_medication_edit(context)
+        return f"Updated {pending.title} to recur on {_format_weekdays(pending.requested_days_of_week)}."
+    _clear_pending_medication_edit(context)
+    return "I could not apply that medication change."
 
 
 def _store_pending_action(context: dict, plan: CompiledActionPlan) -> None:
@@ -579,6 +843,12 @@ async def twilio_gateway_webhook(request: Request) -> Response:
 
     normalized = text.strip().lower()
     today = adapter.get_today(str(context["patient_id"]))
+    pending_medication_edit_reply = _handle_pending_medication_edit(context, text)
+    if pending_medication_edit_reply is not None:
+        return Response(content=message_response(pending_medication_edit_reply), media_type="text/xml")
+    medication_edit_reply = _start_medication_edit(text, context, today)
+    if medication_edit_reply is not None:
+        return Response(content=message_response(medication_edit_reply), media_type="text/xml")
     implicit_completion = _implicit_completion_reply(text, context, today)
     if implicit_completion is not None:
         return Response(content=message_response(implicit_completion), media_type="text/xml")

@@ -255,6 +255,55 @@ class CareOSAdapter:
         self.supersede_win(win_instance_id, actor_id)
         return created
 
+    def remove_task(
+        self,
+        *,
+        win_instance_id: str,
+        actor_id: str,
+        supersede_active_due: bool = False,
+    ) -> dict[str, Any]:
+        binding = self.get_win_binding(win_instance_id)
+        care_plan_id = str(binding["care_plan_id"])
+        win_definition_id = str(binding["win_definition_id"])
+        payload = {
+            "actor_participant_id": actor_id,
+            "reason": "confirmed_whatsapp_remove_request",
+            "supersede_active_due": supersede_active_due,
+        }
+        return self._request(
+            f"/care-plans/{care_plan_id}/wins/{win_definition_id}",
+            method="DELETE",
+            payload=payload,
+        )
+
+    def update_task_recurrence(
+        self,
+        *,
+        win_instance_id: str,
+        actor_id: str,
+        recurrence_type: str,
+        recurrence_interval: int = 1,
+        recurrence_days_of_week: list[int] | None = None,
+        recurrence_until: str | None = None,
+    ) -> dict[str, Any]:
+        binding = self.get_win_binding(win_instance_id)
+        care_plan_id = str(binding["care_plan_id"])
+        win_definition_id = str(binding["win_definition_id"])
+        payload = {
+            "actor_participant_id": actor_id,
+            "reason": "confirmed_whatsapp_recurrence_request",
+            "supersede_active_due": False,
+            "recurrence_type": recurrence_type,
+            "recurrence_interval": max(int(recurrence_interval or 1), 1),
+            "recurrence_days_of_week": list(recurrence_days_of_week or []),
+            "recurrence_until": recurrence_until,
+        }
+        return self._request(
+            f"/care-plans/{care_plan_id}/wins/{win_definition_id}",
+            method="PATCH",
+            payload=payload,
+        )
+
     def skip_win(self, instance_id: str, actor_id: str) -> dict[str, Any]:
         return self._request(
             f"/wins/{instance_id}/skip",

@@ -153,6 +153,10 @@ class CarePlanEditService:
             updates = payload.model_dump(exclude_none=True, mode="json")
             for key in ["actor_participant_id", "reason", "supersede_active_due", "future_instances"]:
                 updates.pop(key, None)
+            recurrence_changed = any(
+                key in updates
+                for key in ("recurrence_type", "recurrence_interval", "recurrence_days_of_week", "recurrence_until")
+            )
             if payload.future_instances:
                 seed_start = _ensure_utc(payload.future_instances[0].scheduled_start)
                 seed_end = _ensure_utc(payload.future_instances[0].scheduled_end)
@@ -169,8 +173,10 @@ class CarePlanEditService:
                 reason=payload.reason,
                 change_id=change_id,
                 supersede_active_due=payload.supersede_active_due,
-                force_supersede=bool(payload.future_instances),
+                force_supersede=bool(payload.future_instances) or recurrence_changed,
             )
+            if recurrence_changed and not payload.future_instances:
+                self.store.ensure_recurrence_instances(patient_id, now)
             _sync_definition_maps_inmemory(self.store, win_definition_id)
             version = _bump_version_inmemory(self.store, care_plan_id)
             _record_version_and_change_inmemory(
@@ -406,6 +412,9 @@ class CarePlanEditService:
     ) -> CarePlanDeltaResult:
         assert isinstance(self.store, PostgresStore)
         now = datetime.now(UTC)
+        recurrence_changed = False
+        effective_recurrence_type = "one_off"
+        result: CarePlanDeltaResult | None = None
         with get_connection(self.store.database_url) as conn, conn.cursor() as cur:
             cur.execute("SELECT patient_id FROM care_plans WHERE id = %s", (care_plan_id,))
             patient_id = str(cur.fetchone()[0])
@@ -443,6 +452,11 @@ class CarePlanEditService:
             updates = payload.model_dump(exclude_none=True, mode="json")
             for key in ["actor_participant_id", "reason", "supersede_active_due", "future_instances"]:
                 updates.pop(key, None)
+            recurrence_changed = any(
+                key in updates
+                for key in ("recurrence_type", "recurrence_interval", "recurrence_days_of_week", "recurrence_until")
+            )
+            effective_recurrence_type = str(updates.get("recurrence_type", old_value["recurrence_type"]))
             if payload.future_instances:
                 seed_start = _ensure_utc(payload.future_instances[0].scheduled_start)
                 seed_end = _ensure_utc(payload.future_instances[0].scheduled_end)
@@ -465,7 +479,7 @@ class CarePlanEditService:
                 supersede_active_due=payload.supersede_active_due,
                 reason=payload.reason,
                 change_id=change_id,
-                force_supersede=bool(payload.future_instances),
+                force_supersede=bool(payload.future_instances) or recurrence_changed,
             )
 
             version = self._bump_version_postgres(care_plan_id)
@@ -485,7 +499,7 @@ class CarePlanEditService:
                 created_ids=created_ids,
             )
 
-            return CarePlanDeltaResult(
+            result = CarePlanDeltaResult(
                 care_plan_id=care_plan_id,
                 patient_id=patient_id,
                 new_version=version,
@@ -494,6 +508,11 @@ class CarePlanEditService:
                 superseded_instance_ids=superseded_ids,
                 created_instance_ids=created_ids,
             )
+        if recurrence_changed and effective_recurrence_type != "one_off":
+            self.store.ensure_recurrence_instances(patient_id, now)
+        if result is None:
+            raise ValueError("failed to update win")
+        return result
 
     def _remove_win_postgres(
         self,

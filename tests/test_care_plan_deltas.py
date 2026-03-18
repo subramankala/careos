@@ -5,6 +5,17 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 
 from careos.app_context import context
+from careos.domain.enums.core import Criticality, Flexibility, RecurrenceType, Role
+from careos.domain.models.api import (
+    AddWinsRequest,
+    CarePlanCreate,
+    CarePlanWinUpdateRequest,
+    ParticipantCreate,
+    PatientCreate,
+    TenantCreate,
+    WinDefinitionCreate,
+    WinInstanceCreate,
+)
 from careos.main import app
 
 
@@ -305,3 +316,72 @@ def test_unauthorized_caregiver_cannot_edit_other_patient() -> None:
         },
     )
     assert blocked.status_code == 403
+
+
+def test_recurrence_patch_can_change_daily_medication_to_specific_weekdays() -> None:
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    tenant = context.store.create_tenant(TenantCreate(name="tenant-recur001", timezone="UTC"))
+    patient = context.store.create_patient(PatientCreate(tenant_id=tenant["id"], display_name="patient-recur001"))
+    caregiver = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=tenant["id"],
+            role=Role.CAREGIVER,
+            display_name="caregiver-recur001",
+            phone_number="+15550009999",
+        )
+    )
+    context.store.link_caregiver(caregiver["id"], patient["id"])
+    care_plan = context.store.create_care_plan(
+        CarePlanCreate(patient_id=patient["id"], created_by_participant_id=caregiver["id"])
+    )
+
+    context.store.add_wins(
+        care_plan["id"],
+        AddWinsRequest(
+            patient_id=patient["id"],
+            definitions=[
+                WinDefinitionCreate(
+                    category="medication",
+                    title="Rhythm med",
+                    instructions="Take after breakfast",
+                    criticality=Criticality.HIGH,
+                    flexibility=Flexibility.RIGID,
+                    recurrence_type=RecurrenceType.DAILY,
+                    recurrence_interval=1,
+                    recurrence_days_of_week=[],
+                )
+            ],
+            instances=[
+                WinInstanceCreate(
+                    scheduled_start=now + timedelta(days=1, hours=8),
+                    scheduled_end=now + timedelta(days=1, hours=8, minutes=30),
+                )
+            ],
+        ),
+    )
+    context.store.ensure_recurrence_instances(patient["id"], now, horizon_days=10)
+    definition_id = _definition_id_for_plan(care_plan["id"], "Rhythm med")
+
+    result = context.care_plan_edits.update_win(
+        care_plan["id"],
+        definition_id,
+        CarePlanWinUpdateRequest(
+            actor_participant_id=caregiver["id"],
+            reason="switch to weekdays",
+            recurrence_type=RecurrenceType.WEEKLY,
+            recurrence_interval=1,
+            recurrence_days_of_week=[0, 2, 4],
+        ),
+    )
+    assert result.superseded_instance_ids
+
+    future_active = [
+        instance
+        for instance in context.store.win_instances.values()
+        if str(instance.get("patient_id")) == patient["id"]
+        and str(instance.get("win_definition_id")) == definition_id
+        and str(instance.get("current_state")) != "superseded"
+        and instance["scheduled_start"] > now
+    ]
+    assert future_active
+    assert {item["scheduled_start"].weekday() for item in future_active}.issubset({0, 2, 4})

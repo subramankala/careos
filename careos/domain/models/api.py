@@ -240,6 +240,10 @@ class CarePlanWinUpdateRequest(CarePlanDeltaMeta):
     why_it_matters: str | None = None
     criticality: Criticality | None = None
     flexibility: Flexibility | None = None
+    recurrence_type: RecurrenceType | None = None
+    recurrence_interval: int | None = None
+    recurrence_days_of_week: list[int] | None = None
+    recurrence_until: datetime | None = None
     temporary_start: datetime | None = None
     temporary_end: datetime | None = None
     default_channel_policy: dict[str, str] | None = None
