@@ -95,6 +95,33 @@ def _looks_like_create_request(text: str) -> bool:
     )
 
 
+def _looks_like_med_count_request(text: str) -> bool:
+    lower = text.strip().lower()
+    if not lower:
+        return False
+    if "med" not in lower and "medication" not in lower and "medicine" not in lower and "medicines" not in lower:
+        return False
+    if any(keyword in lower for keyword in {"type", "types", "kind", "kinds", "category", "categories", "purpose"}):
+        return False
+    count_words = {"how many", "count", "total", "number of"}
+    completion_words = {"took", "taken", "completed", "finish", "finished", "done"}
+    time_words = {"today", "so far", "this morning", "this evening"}
+    has_count = any(phrase in lower for phrase in count_words)
+    has_completion = any(phrase in lower for phrase in completion_words)
+    has_time = any(phrase in lower for phrase in time_words)
+    return has_count and (has_completion or has_time)
+
+
+def _looks_like_critical_missed_request(text: str) -> bool:
+    lower = text.strip().lower()
+    if "critical" not in lower:
+        return False
+    missed_phrases = {"missed", "miss any", "did i miss", "overdue", "past due", "due right now"}
+    if any(phrase in lower for phrase in missed_phrases):
+        return True
+    return "critical meds due" in lower or "critical medications due" in lower
+
+
 def _pre_llm_read_intent(text: str) -> IntentParseResult | None:
     lower = text.strip().lower()
     if not lower:
@@ -120,11 +147,9 @@ def _pre_llm_read_intent(text: str) -> IntentParseResult | None:
         return IntentParseResult(intent="schedule_today", confidence=0.91, rationale="schedule_today_tokens_pre_llm")
     if "status" in tokens or "adherence" in tokens:
         return IntentParseResult(intent="status", confidence=0.9, rationale="status_pre_llm")
-    if ("how many" in lower or "count" in lower or "total" in lower) and (
-        "med" in lower or "medication" in lower
-    ):
+    if _looks_like_med_count_request(lower):
         return IntentParseResult(intent="med_count_today", confidence=0.9, rationale="med_count_pre_llm")
-    if "critical" in lower and ("missed" in lower or "miss any" in lower or "did i miss" in lower):
+    if _looks_like_critical_missed_request(lower):
         return IntentParseResult(intent="critical_missed_today", confidence=0.9, rationale="critical_missed_pre_llm")
     return None
 
@@ -143,16 +168,9 @@ def _rule_parse(text: str) -> IntentParseResult:
         return IntentParseResult(intent="schedule_today", confidence=0.82, rationale="schedule_keyword")
     if "status" in lower or "adherence" in lower:
         return IntentParseResult(intent="status", confidence=0.82, rationale="status_keyword")
-    if ("how many" in lower or "count" in lower or "total" in lower) and (
-        "med" in lower or "medication" in lower
-    ):
+    if _looks_like_med_count_request(lower):
         return IntentParseResult(intent="med_count_today", confidence=0.84, rationale="med_count_phrase")
-    if "critical" in lower and (
-        "missed" in lower
-        or "miss any" in lower
-        or "did i miss" in lower
-        or "due" in lower
-    ):
+    if _looks_like_critical_missed_request(lower):
         return IntentParseResult(intent="critical_missed_today", confidence=0.84, rationale="critical_missed_phrase")
     if (
         ("only critical" in lower or "critical reminders" in lower or "send critical" in lower)

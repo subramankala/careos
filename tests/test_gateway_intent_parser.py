@@ -207,3 +207,33 @@ def test_llm_dashboard_guess_does_not_hijack_medication_purpose_question(monkeyp
         assert parsed.intent == "clarify"
     finally:
         settings.openai_api_key = previous_key
+
+
+def test_medication_type_question_does_not_map_to_med_count() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "How many types of medication i have",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "clarify"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_critical_medication_advice_question_does_not_map_to_critical_missed() -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        parsed = parse_intent(
+            "Which are the most critical medications, which i should never skip, given i had stent 3 weeks ago",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "clarify"
+    finally:
+        settings.openai_api_key = previous_key
