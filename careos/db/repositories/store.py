@@ -384,6 +384,16 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def deactivate_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        fact_key: str,
+    ) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def log_mediation_decision(
         self,
         *,
@@ -1405,6 +1415,28 @@ class InMemoryStore(Store):
         ]
         rows.sort(key=lambda item: str(item["created_at"]))
         return rows
+
+    def deactivate_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        fact_key: str,
+    ) -> dict | None:
+        normalized_key = str(fact_key).strip().lower()
+        candidates = [
+            fact
+            for fact in self.patient_clinical_facts.values()
+            if str(fact["tenant_id"]) == str(tenant_id)
+            and str(fact["patient_id"]) == str(patient_id)
+            and str(fact.get("status", "active")) == "active"
+            and str(fact["fact_key"]).strip().lower() == normalized_key
+        ]
+        if not candidates:
+            return None
+        latest = sorted(candidates, key=lambda item: str(item["created_at"]))[-1]
+        latest["status"] = "forgotten"
+        return dict(latest)
 
     def log_mediation_decision(
         self,
@@ -2747,6 +2779,34 @@ class PostgresStore(Store):
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (tenant_id, patient_id))
             return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def deactivate_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        fact_key: str,
+    ) -> dict | None:
+        sql = """
+        UPDATE patient_clinical_facts
+        SET status = 'forgotten'
+        WHERE id = (
+            SELECT id
+            FROM patient_clinical_facts
+            WHERE tenant_id = %s
+              AND patient_id = %s
+              AND lower(fact_key) = %s
+              AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id, tenant_id, patient_id, actor_participant_id, fact_key, fact_value, summary, source,
+                  effective_at, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id, str(fact_key).strip().lower()))
+            row = cur.fetchone()
+            return _row_dict(cur, row) if row is not None else None
 
     def log_mediation_decision(
         self,

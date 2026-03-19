@@ -451,6 +451,19 @@ def list_active_patient_clinical_facts(tenant_id: str = Query(...), patient_id: 
     return {"facts": context.patient_context.active_clinical_facts(tenant_id=tenant_id, patient_id=patient_id)}
 
 
+@router.delete("/internal/patient-context/clinical-facts")
+def forget_patient_clinical_fact(tenant_id: str = Query(...), patient_id: str = Query(...), fact_key: str = Query(...)) -> dict:
+    try:
+        row = context.patient_context.forget_clinical_fact(
+            tenant_id=tenant_id,
+            patient_id=patient_id,
+            fact_key=fact_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"fact": row}
+
+
 @router.get("/internal/personalization/rules/active")
 def list_active_personalization_rules(tenant_id: str = Query(...), patient_id: str = Query(...)) -> dict:
     rows = context.personalization.active_rules(tenant_id=tenant_id, patient_id=patient_id)

@@ -42,3 +42,18 @@ class PatientContextService:
 
     def active_clinical_facts(self, *, tenant_id: str, patient_id: str) -> list[dict]:
         return self.store.list_active_patient_clinical_facts(tenant_id=tenant_id, patient_id=patient_id)
+
+    def forget_clinical_fact(self, *, tenant_id: str, patient_id: str, fact_key: str) -> dict | None:
+        profile = self.store.get_patient_profile(patient_id)
+        if profile is None:
+            raise ValueError("patient not found")
+        if str(profile.get("tenant_id")) != str(tenant_id):
+            raise ValueError("tenant-patient mismatch")
+        normalized_key = str(fact_key).strip().lower()
+        if not normalized_key:
+            raise ValueError("fact_key is required")
+        return self.store.deactivate_patient_clinical_fact(
+            tenant_id=tenant_id,
+            patient_id=patient_id,
+            fact_key=normalized_key,
+        )

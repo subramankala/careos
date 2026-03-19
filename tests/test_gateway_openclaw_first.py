@@ -212,6 +212,15 @@ class _AdapterBase:
         ]
         return {"facts": rows}
 
+    def forget_patient_clinical_fact(self, *, tenant_id: str, patient_id: str, fact_key: str) -> dict:
+        for row in self.clinical_facts:
+            if row["tenant_id"] == tenant_id and row["patient_id"] == patient_id and row["fact_key"] == fact_key:
+                self.clinical_facts = [item for item in self.clinical_facts if item is not row]
+                forgotten = dict(row)
+                forgotten["status"] = "forgotten"
+                return {"fact": forgotten}
+        return {"fact": None}
+
 
 class _ObserverAdapter(_AdapterBase):
     def resolve_context(self, phone_number: str) -> dict | None:
@@ -1107,6 +1116,76 @@ def test_gateway_facts_command_lists_clinical_facts(monkeypatch) -> None:
         assert response.status_code == 200
         assert b"Remembered clinical facts:" in response.body
         assert b"recent_procedure: Coronary stent placement on 2026-02-26" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_forget_command_removes_fact_by_key(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.clinical_facts = [
+        {
+            "id": "fact-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "fact_key": "recent_procedure",
+            "fact_value": {"statement": "Coronary stent placement on 2026-02-26"},
+            "summary": "Coronary stent placement on 2026-02-26",
+            "source": "caregiver_reported",
+            "effective_at": None,
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "forget recent_procedure",
+                "MessageSid": "SM-gw-forget-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Forgot recent_procedure: Coronary stent placement on 2026-02-26" in response.body
+        assert adapter.clinical_facts == []
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_forget_command_removes_fact_by_number(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.clinical_facts = [
+        {
+            "id": "fact-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "fact_key": "recent_procedure",
+            "fact_value": {"statement": "Coronary stent placement on 2026-02-26"},
+            "summary": "Coronary stent placement on 2026-02-26",
+            "source": "caregiver_reported",
+            "effective_at": None,
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "forget 1",
+                "MessageSid": "SM-gw-forget-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Forgot recent_procedure: Coronary stent placement on 2026-02-26" in response.body
+        assert adapter.clinical_facts == []
     finally:
         settings.gateway_conversation_mode = previous_mode
 

@@ -222,6 +222,42 @@ def _handle_list_clinical_facts(context: dict) -> str | None:
     return "\n".join(lines)
 
 
+def _parse_forget_command(text: str) -> str | None:
+    match = re.fullmatch(r"\s*forget\s+(.+?)\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    target = match.group(1).strip()
+    return target or None
+
+
+def _handle_forget_command(text: str, context: dict) -> str | None:
+    target = _parse_forget_command(text)
+    if target is None:
+        return None
+    response = adapter.list_active_patient_clinical_facts(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+    )
+    facts = list(response.get("facts", []))
+    if not facts:
+        return "No durable clinical facts are stored yet."
+    fact_key = target.strip().lower()
+    if target.isdigit():
+        index = int(target)
+        if index < 1 or index > len(facts):
+            return "Fact number is out of range. Send 'facts' first."
+        fact_key = str(facts[index - 1].get("fact_key", "")).strip().lower()
+    deleted = adapter.forget_patient_clinical_fact(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+        fact_key=fact_key,
+    ).get("fact")
+    if not deleted:
+        return f"I could not find a remembered fact for {target}."
+    summary = str(deleted.get("summary", "")).strip()
+    return f"Forgot {fact_key}: {summary}"
+
+
 def _parse_caregiver_preset_command(text: str) -> tuple[str, str] | None:
     normalized = " ".join(text.strip().lower().split())
     match = re.fullmatch(r"set caregiver (\+?\d{7,15}) as (observer|primary|primary caregiver|primary_caregiver)", normalized)
@@ -972,6 +1008,9 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     if normalized in {"facts", "clinical facts", "remembered facts"}:
         reply = _handle_list_clinical_facts(context)
         return Response(content=message_response(reply or "No clinical facts available."), media_type="text/xml")
+    forget_reply = _handle_forget_command(text, context)
+    if forget_reply is not None:
+        return Response(content=message_response(forget_reply), media_type="text/xml")
     remember_reply = _handle_remember_command(text, context)
     if remember_reply is not None:
         return Response(content=message_response(remember_reply), media_type="text/xml")

@@ -89,3 +89,27 @@ def test_inmemory_patient_clinical_facts_upsert_latest_active_by_key() -> None:
     assert active[0]["id"] == second["id"]
     assert active[0]["summary"] == "Coronary stent placement on 2026-02-27."
     assert store.patient_clinical_facts[first["id"]]["status"] == "superseded"
+
+
+def test_inmemory_patient_clinical_facts_can_be_forgotten() -> None:
+    store = InMemoryStore()
+    inserted = store.upsert_patient_clinical_fact(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        fact_key="recent_procedure",
+        fact_value={"procedure": "PCI", "date": "2026-02-26"},
+        summary="PCI on 2026-02-26.",
+        source="caregiver_reported",
+        effective_at=None,
+    )
+    forgotten = store.deactivate_patient_clinical_fact(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        fact_key="recent_procedure",
+    )
+    active = store.list_active_patient_clinical_facts(tenant_id="tenant-1", patient_id="patient-1")
+    assert forgotten is not None
+    assert forgotten["id"] == inserted["id"]
+    assert forgotten["status"] == "forgotten"
+    assert active == []

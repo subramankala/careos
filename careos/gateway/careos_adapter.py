@@ -382,6 +382,12 @@ class CareOSAdapter:
             method="GET",
         )
 
+    def forget_patient_clinical_fact(self, *, tenant_id: str, patient_id: str, fact_key: str) -> dict[str, Any]:
+        return self._request(
+            f"/internal/patient-context/clinical-facts?tenant_id={tenant_id}&patient_id={patient_id}&fact_key={fact_key}",
+            method="DELETE",
+        )
+
     def log_mediation_decision(
         self,
         *,
