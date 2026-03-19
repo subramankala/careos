@@ -221,6 +221,8 @@ class CarePlanEditService:
         if isinstance(self.store, InMemoryStore):
             definition = self.store.win_definitions[win_definition_id]
             old_value = dict(definition)
+            definition["temporary_end"] = now
+            definition["recurrence_until"] = now
             superseded, _ = _regenerate_future_instances_inmemory(
                 store=self.store,
                 win_definition_id=win_definition_id,
@@ -526,6 +528,15 @@ class CarePlanEditService:
         with get_connection(self.store.database_url) as conn, conn.cursor() as cur:
             cur.execute("SELECT patient_id FROM care_plans WHERE id = %s", (care_plan_id,))
             patient_id = str(cur.fetchone()[0])
+            cur.execute(
+                """
+                UPDATE win_definitions
+                SET temporary_end = %s,
+                    recurrence_until = %s
+                WHERE id = %s
+                """,
+                (now, now, win_definition_id),
+            )
             superseded_ids, _ = _regenerate_future_instances_postgres(
                 cur=cur,
                 win_definition_id=win_definition_id,

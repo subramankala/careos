@@ -9,6 +9,7 @@ from careos.domain.enums.core import Criticality, Flexibility, RecurrenceType, R
 from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
+    CarePlanWinRemoveRequest,
     CarePlanWinUpdateRequest,
     ParticipantCreate,
     PatientCreate,
@@ -385,3 +386,69 @@ def test_recurrence_patch_can_change_daily_medication_to_specific_weekdays() -> 
     ]
     assert future_active
     assert {item["scheduled_start"].weekday() for item in future_active}.issubset({0, 2, 4})
+
+
+def test_remove_recurring_medication_stops_future_regeneration() -> None:
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    tenant = context.store.create_tenant(TenantCreate(name="tenant-removemed001", timezone="UTC"))
+    patient = context.store.create_patient(PatientCreate(tenant_id=tenant["id"], display_name="patient-removemed001"))
+    caregiver = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=tenant["id"],
+            role=Role.CAREGIVER,
+            display_name="caregiver-removemed001",
+            phone_number="+15550008888",
+        )
+    )
+    context.store.link_caregiver(caregiver["id"], patient["id"])
+    care_plan = context.store.create_care_plan(
+        CarePlanCreate(patient_id=patient["id"], created_by_participant_id=caregiver["id"])
+    )
+
+    context.store.add_wins(
+        care_plan["id"],
+        AddWinsRequest(
+            patient_id=patient["id"],
+            definitions=[
+                WinDefinitionCreate(
+                    category="medication",
+                    title="Delete me med",
+                    instructions="Take once daily",
+                    criticality=Criticality.HIGH,
+                    flexibility=Flexibility.RIGID,
+                    recurrence_type=RecurrenceType.DAILY,
+                    recurrence_interval=1,
+                )
+            ],
+            instances=[
+                WinInstanceCreate(
+                    scheduled_start=now + timedelta(days=1, hours=8),
+                    scheduled_end=now + timedelta(days=1, hours=8, minutes=30),
+                )
+            ],
+        ),
+    )
+    context.store.ensure_recurrence_instances(patient["id"], now, horizon_days=5)
+    definition_id = _definition_id_for_plan(care_plan["id"], "Delete me med")
+
+    removed = context.care_plan_edits.remove_win(
+        care_plan["id"],
+        definition_id,
+        CarePlanWinRemoveRequest(
+            actor_participant_id=caregiver["id"],
+            reason="remove medication",
+            supersede_active_due=True,
+        ),
+    )
+    assert removed.superseded_instance_ids
+
+    context.store.ensure_recurrence_instances(patient["id"], now, horizon_days=5)
+    future_active = [
+        instance
+        for instance in context.store.win_instances.values()
+        if str(instance.get("patient_id")) == patient["id"]
+        and str(instance.get("win_definition_id")) == definition_id
+        and str(instance.get("current_state")) != "superseded"
+        and instance["scheduled_start"] > now
+    ]
+    assert future_active == []
