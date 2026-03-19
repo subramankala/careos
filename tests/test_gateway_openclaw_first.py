@@ -19,6 +19,7 @@ class _AdapterBase:
         self.bindings: dict[str, dict] = {}
         self.timeline: list[dict] = []
         self.pending_gateway_actions: dict[str, dict] = {}
+        self.clinical_facts: list[dict] = []
 
     def resolve_context(self, phone_number: str) -> dict | None:
         return {
@@ -174,6 +175,42 @@ class _AdapterBase:
     def clear_pending_gateway_action(self, pending_key: str) -> dict:
         self.pending_gateway_actions.pop(pending_key, None)
         return {"ok": True}
+
+    def upsert_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        fact_key: str,
+        fact_value: dict,
+        summary: str,
+        source: str = "caregiver_reported",
+        effective_at_iso: str | None = None,
+    ) -> dict:
+        self.clinical_facts = [row for row in self.clinical_facts if row["fact_key"] != fact_key]
+        payload = {
+            "id": f"fact-{fact_key}",
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "actor_participant_id": actor_participant_id,
+            "fact_key": fact_key,
+            "fact_value": dict(fact_value or {}),
+            "summary": summary,
+            "source": source,
+            "effective_at": effective_at_iso,
+            "status": "active",
+        }
+        self.clinical_facts.append(payload)
+        return dict(payload)
+
+    def list_active_patient_clinical_facts(self, *, tenant_id: str, patient_id: str) -> dict:
+        rows = [
+            dict(row)
+            for row in self.clinical_facts
+            if row["tenant_id"] == tenant_id and row["patient_id"] == patient_id
+        ]
+        return {"facts": rows}
 
 
 class _ObserverAdapter(_AdapterBase):
@@ -988,6 +1025,88 @@ def test_gateway_runs_structured_medication_weekday_update_flow(monkeypatch) -> 
                 "recurrence_until": None,
             }
         ]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_remember_command_stores_explicit_clinical_fact(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Remember recent_procedure: Coronary stent placement on 2026-02-26",
+                "MessageSid": "SM-gw-remember-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Remembered under recent_procedure" in response.body
+        assert len(adapter.clinical_facts) == 1
+        assert adapter.clinical_facts[0]["fact_key"] == "recent_procedure"
+        assert adapter.clinical_facts[0]["summary"] == "Coronary stent placement on 2026-02-26"
+        assert adapter.clinical_facts[0]["fact_value"]["detected_dates"] == ["2026-02-26"]
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_remember_command_derives_key_when_not_provided(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Remember I had coronary stent placement on 2026-02-26",
+                "MessageSid": "SM-gw-remember-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Remembered under coronary_stent_placement_2026" in response.body
+        assert b"To update it later, send: remember coronary_stent_placement_2026" in response.body
+        assert len(adapter.clinical_facts) == 1
+        assert adapter.clinical_facts[0]["fact_key"] == "coronary_stent_placement_2026"
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_facts_command_lists_clinical_facts(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.clinical_facts = [
+        {
+            "id": "fact-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "fact_key": "recent_procedure",
+            "fact_value": {"statement": "Coronary stent placement on 2026-02-26"},
+            "summary": "Coronary stent placement on 2026-02-26",
+            "source": "caregiver_reported",
+            "effective_at": None,
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "facts",
+                "MessageSid": "SM-gw-facts-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Remembered clinical facts:" in response.body
+        assert b"recent_procedure: Coronary stent placement on 2026-02-26" in response.body
     finally:
         settings.gateway_conversation_mode = previous_mode
 

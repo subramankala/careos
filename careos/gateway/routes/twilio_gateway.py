@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import re
+from hashlib import sha1
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
@@ -132,6 +133,93 @@ def _normalize_setup_intent(text: str) -> str | None:
     if normalized in {"add a routine", "add routine"}:
         return "add routines"
     return None
+
+
+def _normalize_fact_key(raw_key: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", raw_key.strip().lower()).strip("_")
+    return cleaned[:64]
+
+
+def _derive_fact_key(summary: str) -> str:
+    tokens = [token for token in re.split(r"[^a-z0-9]+", summary.lower()) if token]
+    stop_words = {"that", "i", "me", "my", "had", "have", "was", "were", "am", "is", "the", "a", "an", "on", "in"}
+    informative = [token for token in tokens if token not in stop_words]
+    base = "_".join(informative[:4]).strip("_")
+    if not base:
+        digest = sha1(summary.encode("utf-8")).hexdigest()[:10]
+        return f"fact_{digest}"
+    return _normalize_fact_key(base)
+
+
+def _extract_detected_dates(summary: str) -> list[str]:
+    return re.findall(r"\b\d{4}-\d{2}-\d{2}\b", summary)
+
+
+def _parse_remember_command(text: str) -> tuple[str, str, bool] | None:
+    match = re.fullmatch(r"\s*remember(?:\s+that)?\s+(.+?)\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    body = match.group(1).strip()
+    if not body:
+        return None
+    if ":" in body:
+        raw_key, summary = body.split(":", 1)
+        fact_key = _normalize_fact_key(raw_key)
+        summary = summary.strip()
+        if fact_key and summary:
+            return fact_key, summary, True
+    summary = body.strip()
+    if not summary:
+        return None
+    return _derive_fact_key(summary), summary, False
+
+
+def _remember_source_for_role(role: str) -> str:
+    normalized = str(role).strip().lower()
+    if normalized == "patient":
+        return "patient_reported"
+    if normalized == "clinician":
+        return "clinician_reported"
+    return "caregiver_reported"
+
+
+def _handle_remember_command(text: str, context: dict) -> str | None:
+    parsed = _parse_remember_command(text)
+    if parsed is None:
+        return None
+    fact_key, summary, explicit_key = parsed
+    adapter.upsert_patient_clinical_fact(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+        actor_participant_id=str(context["participant_id"]),
+        fact_key=fact_key,
+        fact_value={
+            "statement": summary,
+            "detected_dates": _extract_detected_dates(summary),
+        },
+        summary=summary,
+        source=_remember_source_for_role(str(context["participant_role"])),
+        effective_at_iso=None,
+    )
+    if explicit_key:
+        return f"Remembered under {fact_key}: {summary}"
+    return f"Remembered under {fact_key}: {summary}\nTo update it later, send: remember {fact_key}: <updated fact>"
+
+
+def _handle_list_clinical_facts(context: dict) -> str | None:
+    response = adapter.list_active_patient_clinical_facts(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+    )
+    facts = list(response.get("facts", []))
+    if not facts:
+        return "No durable clinical facts are stored yet. Use 'remember ...' to add one."
+    lines = ["Remembered clinical facts:"]
+    for index, fact in enumerate(facts, start=1):
+        key = str(fact.get("fact_key", "")).strip()
+        summary = str(fact.get("summary", "")).strip()
+        lines.append(f"{index}. {key}: {summary}")
+    return "\n".join(lines)
 
 
 def _parse_caregiver_preset_command(text: str) -> tuple[str, str] | None:
@@ -881,6 +969,12 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             preset=preset,
         )
         return Response(content=message_response(reply), media_type="text/xml")
+    if normalized in {"facts", "clinical facts", "remembered facts"}:
+        reply = _handle_list_clinical_facts(context)
+        return Response(content=message_response(reply or "No clinical facts available."), media_type="text/xml")
+    remember_reply = _handle_remember_command(text, context)
+    if remember_reply is not None:
+        return Response(content=message_response(remember_reply), media_type="text/xml")
 
     if _is_legacy_router_command(text):
         result = app_context.router.handle(text, _to_participant_context(context))
