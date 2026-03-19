@@ -209,6 +209,46 @@ def test_llm_dashboard_guess_does_not_hijack_medication_purpose_question(monkeyp
         settings.openai_api_key = previous_key
 
 
+def test_llm_med_count_guess_does_not_hijack_medication_type_question(monkeypatch) -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = "dummy-key"
+
+    def _fake_llm_parse(text: str, context: dict, today: dict, status: dict) -> IntentParseResult | None:  # noqa: ARG001
+        return IntentParseResult(intent="med_count_today", confidence=0.95, rationale="incorrect_med_count_llm")
+
+    monkeypatch.setattr("careos.gateway.intent_parser._llm_parse", _fake_llm_parse)
+    try:
+        parsed = parse_intent(
+            "How many types of medication i have",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "clarify"
+    finally:
+        settings.openai_api_key = previous_key
+
+
+def test_llm_critical_missed_guess_does_not_hijack_medication_advice_question(monkeypatch) -> None:
+    previous_key = settings.openai_api_key
+    settings.openai_api_key = "dummy-key"
+
+    def _fake_llm_parse(text: str, context: dict, today: dict, status: dict) -> IntentParseResult | None:  # noqa: ARG001
+        return IntentParseResult(intent="critical_missed_today", confidence=0.95, rationale="incorrect_critical_llm")
+
+    monkeypatch.setattr("careos.gateway.intent_parser._llm_parse", _fake_llm_parse)
+    try:
+        parsed = parse_intent(
+            "Which are the most critical medications, which i should never skip, given i had stent 3 weeks ago",
+            context=_ctx(),
+            today=_today(),
+            status=_status(),
+        )
+        assert parsed.intent == "clarify"
+    finally:
+        settings.openai_api_key = previous_key
+
+
 def test_medication_type_question_does_not_map_to_med_count() -> None:
     previous_key = settings.openai_api_key
     settings.openai_api_key = ""

@@ -256,6 +256,10 @@ def parse_intent(text: str, *, context: dict, today: dict, status: dict) -> Inte
     if llm is not None:
         if llm.intent == "caregiver_dashboard" and not _looks_like_dashboard_request(text):
             return _rule_parse(text)
+        if llm.intent == "med_count_today" and not _looks_like_med_count_request(text):
+            return _rule_parse(text)
+        if llm.intent == "critical_missed_today" and not _looks_like_critical_missed_request(text):
+            return _rule_parse(text)
         if llm.confidence >= threshold:
             return llm
         return IntentParseResult(intent="clarify", confidence=llm.confidence, rationale=f"low_confidence:{llm.rationale}")
