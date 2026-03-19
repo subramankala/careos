@@ -59,3 +59,33 @@ def test_inmemory_mediation_decision_idempotency() -> None:
     )
     assert first is True
     assert second is False
+
+
+def test_inmemory_patient_clinical_facts_upsert_latest_active_by_key() -> None:
+    store = InMemoryStore()
+    first = store.upsert_patient_clinical_fact(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        fact_key="recent_procedure",
+        fact_value={"procedure": "PCI", "date": "2026-02-26"},
+        summary="PCI on 2026-02-26.",
+        source="caregiver_reported",
+        effective_at=None,
+    )
+    second = store.upsert_patient_clinical_fact(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-2",
+        fact_key="recent_procedure",
+        fact_value={"procedure": "Coronary stent placement", "date": "2026-02-27"},
+        summary="Coronary stent placement on 2026-02-27.",
+        source="caregiver_reported",
+        effective_at=None,
+    )
+
+    active = store.list_active_patient_clinical_facts(tenant_id="tenant-1", patient_id="patient-1")
+    assert len(active) == 1
+    assert active[0]["id"] == second["id"]
+    assert active[0]["summary"] == "Coronary stent placement on 2026-02-27."
+    assert store.patient_clinical_facts[first["id"]]["status"] == "superseded"

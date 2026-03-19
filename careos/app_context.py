@@ -5,6 +5,7 @@ from careos.services.care_plan_edit_service import CarePlanEditService
 from careos.services.identity_service import IdentityService
 from careos.services.messaging_service import MessageOrchestrator
 from careos.services.onboarding_service import OnboardingService
+from careos.services.patient_context_service import PatientContextService
 from careos.services.personalization_service import PersonalizationService
 from careos.services.policy_engine import PolicyEngine
 from careos.services.win_service import WinService
@@ -27,11 +28,13 @@ class AppContext:
         self.messaging = MessageOrchestrator(self.store)
         self.onboarding = OnboardingService(self.store)
         self.personalization = PersonalizationService(self.store)
+        self.patient_context = PatientContextService(self.store)
         self.router = DeterministicRouter(self.win_service)
         self.openclaw_router = OpenClawConversationEngine(
             base_url=settings.openclaw_base_url,
             timeout_seconds=settings.openclaw_timeout_seconds,
             win_service=self.win_service,
+            patient_context_service=self.patient_context,
             fallback_path=settings.openclaw_fallback_path,
             responses_path=settings.openclaw_responses_path,
             gateway_token=settings.openclaw_gateway_token,

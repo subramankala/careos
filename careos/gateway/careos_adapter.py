@@ -347,6 +347,41 @@ class CareOSAdapter:
             method="GET",
         )
 
+    def upsert_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        fact_key: str,
+        fact_value: dict[str, Any],
+        summary: str,
+        source: str = "caregiver_reported",
+        effective_at_iso: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "actor_participant_id": actor_participant_id,
+            "fact_key": fact_key,
+            "fact_value": dict(fact_value or {}),
+            "summary": summary,
+            "source": source,
+        }
+        if effective_at_iso:
+            payload["effective_at"] = effective_at_iso
+        return self._request(
+            "/internal/patient-context/clinical-facts",
+            method="POST",
+            payload=payload,
+        )
+
+    def list_active_patient_clinical_facts(self, *, tenant_id: str, patient_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/internal/patient-context/clinical-facts/active?tenant_id={tenant_id}&patient_id={patient_id}",
+            method="GET",
+        )
+
     def log_mediation_decision(
         self,
         *,

@@ -202,6 +202,20 @@ class CommandResult(BaseModel):
     action: str
 
 
+class PatientClinicalFact(BaseModel):
+    id: str
+    tenant_id: str
+    patient_id: str
+    actor_participant_id: str
+    fact_key: str
+    fact_value: dict[str, Any] = Field(default_factory=dict)
+    summary: str = ""
+    source: str = "caregiver_reported"
+    effective_at: datetime | None = None
+    created_at: datetime
+    status: str = "active"
+
+
 class CareOSEventPolicy(BaseModel):
     criticality_class: Literal["A", "B", "C"]
     suppression_allowed: bool

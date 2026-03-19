@@ -20,6 +20,17 @@ class PersonalizationRuleCreateRequest(BaseModel):
     expires_at: datetime
 
 
+class PatientClinicalFactCreateRequest(BaseModel):
+    tenant_id: str
+    patient_id: str
+    actor_participant_id: str
+    fact_key: str
+    fact_value: dict = Field(default_factory=dict)
+    summary: str
+    source: str = "caregiver_reported"
+    effective_at: datetime | None = None
+
+
 class MediationDecisionLogRequest(BaseModel):
     event_id: str
     tenant_id: str
@@ -416,6 +427,28 @@ def create_personalization_rule(payload: PersonalizationRuleCreateRequest) -> di
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/internal/patient-context/clinical-facts")
+def create_patient_clinical_fact(payload: PatientClinicalFactCreateRequest) -> dict:
+    try:
+        return context.patient_context.upsert_clinical_fact(
+            tenant_id=payload.tenant_id,
+            patient_id=payload.patient_id,
+            actor_participant_id=payload.actor_participant_id,
+            fact_key=payload.fact_key,
+            fact_value=payload.fact_value,
+            summary=payload.summary,
+            source=payload.source,
+            effective_at=payload.effective_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/internal/patient-context/clinical-facts/active")
+def list_active_patient_clinical_facts(tenant_id: str = Query(...), patient_id: str = Query(...)) -> dict:
+    return {"facts": context.patient_context.active_clinical_facts(tenant_id=tenant_id, patient_id=patient_id)}
 
 
 @router.get("/internal/personalization/rules/active")

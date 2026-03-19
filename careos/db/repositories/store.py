@@ -365,6 +365,25 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def upsert_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        fact_key: str,
+        fact_value: dict,
+        summary: str,
+        source: str,
+        effective_at: datetime | None,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_active_patient_clinical_facts(self, *, tenant_id: str, patient_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
     def log_mediation_decision(
         self,
         *,
@@ -406,6 +425,7 @@ class InMemoryStore(Store):
         self.onboarding_sessions: dict[str, dict] = {}
         self.caregiver_verification_requests: dict[str, dict] = {}
         self.personalization_rules: dict[str, dict] = {}
+        self.patient_clinical_facts: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
 
@@ -1331,6 +1351,58 @@ class InMemoryStore(Store):
             if _ensure_dt(rule["expires_at"]) <= now_utc:
                 continue
             rows.append(dict(rule))
+        rows.sort(key=lambda item: str(item["created_at"]))
+        return rows
+
+    def upsert_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        fact_key: str,
+        fact_value: dict,
+        summary: str,
+        source: str,
+        effective_at: datetime | None,
+    ) -> dict:
+        now = datetime.now(UTC)
+        normalized_key = str(fact_key).strip().lower()
+        for fact in self.patient_clinical_facts.values():
+            if str(fact["tenant_id"]) != str(tenant_id):
+                continue
+            if str(fact["patient_id"]) != str(patient_id):
+                continue
+            if str(fact["fact_key"]).strip().lower() != normalized_key:
+                continue
+            if str(fact.get("status", "active")) != "active":
+                continue
+            fact["status"] = "superseded"
+        fact_id = str(uuid4())
+        row = {
+            "id": fact_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "actor_participant_id": str(actor_participant_id),
+            "fact_key": normalized_key,
+            "fact_value": dict(fact_value or {}),
+            "summary": str(summary).strip(),
+            "source": str(source).strip() or "caregiver_reported",
+            "effective_at": _ensure_utc(effective_at) if effective_at is not None else None,
+            "status": "active",
+            "created_at": now,
+        }
+        self.patient_clinical_facts[fact_id] = row
+        return dict(row)
+
+    def list_active_patient_clinical_facts(self, *, tenant_id: str, patient_id: str) -> list[dict]:
+        rows = [
+            dict(fact)
+            for fact in self.patient_clinical_facts.values()
+            if str(fact["tenant_id"]) == str(tenant_id)
+            and str(fact["patient_id"]) == str(patient_id)
+            and str(fact.get("status", "active")) == "active"
+        ]
         rows.sort(key=lambda item: str(item["created_at"]))
         return rows
 
@@ -2615,6 +2687,65 @@ class PostgresStore(Store):
         """
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (tenant_id, patient_id, _ensure_utc(now)))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def upsert_patient_clinical_fact(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        fact_key: str,
+        fact_value: dict,
+        summary: str,
+        source: str,
+        effective_at: datetime | None,
+    ) -> dict:
+        normalized_key = str(fact_key).strip().lower()
+        deactivate_sql = """
+        UPDATE patient_clinical_facts
+        SET status = 'superseded'
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND lower(fact_key) = %s
+          AND status = 'active'
+        """
+        insert_sql = """
+        INSERT INTO patient_clinical_facts
+        (tenant_id, patient_id, actor_participant_id, fact_key, fact_value, summary, source, effective_at, status)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, 'active')
+        RETURNING id, tenant_id, patient_id, actor_participant_id, fact_key, fact_value, summary, source,
+                  effective_at, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(deactivate_sql, (tenant_id, patient_id, normalized_key))
+            cur.execute(
+                insert_sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    actor_participant_id,
+                    normalized_key,
+                    json.dumps(fact_value or {}),
+                    str(summary).strip(),
+                    str(source).strip() or "caregiver_reported",
+                    _ensure_utc(effective_at) if effective_at is not None else None,
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def list_active_patient_clinical_facts(self, *, tenant_id: str, patient_id: str) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, actor_participant_id, fact_key, fact_value, summary, source,
+               effective_at, status, created_at
+        FROM patient_clinical_facts
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND status = 'active'
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id))
             return [_row_dict(cur, row) for row in cur.fetchall()]
 
     def log_mediation_decision(

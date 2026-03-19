@@ -112,6 +112,15 @@ def _read_tool(tool: str, args: dict[str, Any]) -> dict[str, Any] | list[Any]:
             raise HTTPException(status_code=400, detail="patient_id is required")
         return _request_json(_query_path("/internal/dashboard/medications", patient_id=patient_id))
 
+    if tool == "careos_get_clinical_facts":
+        patient_id = str(args.get("patient_id", "")).strip()
+        tenant_id = str(args.get("tenant_id", "")).strip()
+        if not patient_id or not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id and patient_id are required")
+        return _request_json(
+            _query_path("/internal/patient-context/clinical-facts/active", tenant_id=tenant_id, patient_id=patient_id)
+        )
+
     if tool == "careos_get_recent_events":
         patient_id = str(args.get("patient_id", "")).strip()
         limit = int(args.get("limit", 10) or 10)
@@ -240,6 +249,7 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("careos_get_patient_summary", False, "Get caregiver dashboard patient summary."),
     ToolSpec("careos_get_escalations", False, "Get caregiver dashboard escalations."),
     ToolSpec("careos_get_medications", False, "Get caregiver dashboard medications."),
+    ToolSpec("careos_get_clinical_facts", False, "Get active durable clinical facts for a patient."),
     ToolSpec("careos_get_recent_events", False, "Get caregiver dashboard recent events."),
     ToolSpec("careos_get_task_criticality", False, "Get caregiver dashboard task criticality."),
     ToolSpec("careos_get_today", False, "Get patient's today timeline."),

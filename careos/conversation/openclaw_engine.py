@@ -10,6 +10,7 @@ from careos.conversation.fallback_bridge_logic import fallback_intent, resolve_f
 from careos.conversation.engine_base import ConversationEngine
 from careos.domain.models.api import CommandResult, ParticipantContext
 from careos.logging import get_logger
+from careos.services.patient_context_service import PatientContextService
 from careos.settings import settings
 from careos.services.win_service import WinService
 
@@ -109,6 +110,7 @@ class OpenClawConversationEngine(ConversationEngine):
         base_url: str,
         timeout_seconds: int = 15,
         win_service: WinService | None = None,
+        patient_context_service: PatientContextService | None = None,
         fallback_path: str = "/v1/careos/fallback",
         responses_path: str = "/v1/responses",
         gateway_token: str = "",
@@ -116,6 +118,7 @@ class OpenClawConversationEngine(ConversationEngine):
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = max(int(timeout_seconds), 1)
         self.win_service = win_service
+        self.patient_context_service = patient_context_service
         self.fallback_path = fallback_path if fallback_path.startswith("/") else f"/{fallback_path}"
         self.responses_path = responses_path if responses_path.startswith("/") else f"/{responses_path}"
         self.gateway_token = gateway_token.strip()
@@ -168,9 +171,11 @@ class OpenClawConversationEngine(ConversationEngine):
         if self.win_service is None:
             return {
                 "active_medications": [],
+                "clinical_facts": [],
                 "prn_medications": [],
                 "medication_knowledge": [],
                 "tool_hints": [
+                    "careos_get_clinical_facts",
                     "careos_get_medications",
                     "careos_get_today",
                     "careos_get_status",
@@ -215,12 +220,30 @@ class OpenClawConversationEngine(ConversationEngine):
                 continue
             seen_knowledge.add(key)
             knowledge_rows.append(knowledge)
+        clinical_facts: list[dict[str, object]] = []
+        if self.patient_context_service is not None:
+            rows = self.patient_context_service.active_clinical_facts(
+                tenant_id=context.tenant_id,
+                patient_id=context.patient_id,
+            )
+            clinical_facts = [
+                {
+                    "fact_key": str(row.get("fact_key", "")),
+                    "summary": str(row.get("summary", "")),
+                    "fact_value": dict(row.get("fact_value") or {}),
+                    "source": str(row.get("source", "")),
+                    "effective_at": row.get("effective_at").isoformat() if row.get("effective_at") else None,
+                }
+                for row in rows
+            ]
         return {
             "generated_at_utc": now.isoformat(),
             "active_medications": active_medications,
+            "clinical_facts": clinical_facts,
             "prn_medications": prn_medications,
             "medication_knowledge": knowledge_rows,
             "tool_hints": [
+                "careos_get_clinical_facts",
                 "careos_get_medications",
                 "careos_get_today",
                 "careos_get_status",
@@ -232,13 +255,15 @@ class OpenClawConversationEngine(ConversationEngine):
         return (
             "You are a CareOS assistant. Use only the provided care context and grounded medication context. "
             "Answer concisely and do not invent facts.\n"
+            "If durable clinical facts are provided, use them when they are relevant to the user's question. "
+            "Treat them as patient-specific grounding context and prefer them over generic assumptions.\n"
             "For medication questions, answer from the patient's current medication list first. "
             "If the user asks which medicines are blood thinners or asks to categorize medicines by purpose, "
             "use the active medications and medication knowledge below. "
             "Treat the medication knowledge as common-use guidance, not a patient-specific prescribing instruction. "
             "If a classification is uncertain, say which medication is uncertain instead of giving a generic refusal.\n"
             "If the runtime supports CareOS MCP tools, prefer these read tools for grounding: "
-            "careos_get_medications, careos_get_today, careos_get_status.\n"
+            "careos_get_clinical_facts, careos_get_medications, careos_get_today, careos_get_status.\n"
             f"Now (UTC): {datetime.utcnow().isoformat()}Z\n"
             f"Tenant: {context.tenant_id}\n"
             f"Participant: {context.participant_id} ({context.participant_role.value})\n"

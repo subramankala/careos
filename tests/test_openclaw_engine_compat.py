@@ -71,6 +71,19 @@ class _FakeWinService:
         return [{"title": "Sorbitrate 5mg (SOS)", "instructions": "Use only if chest pain occurs"}]
 
 
+class _FakePatientContextService:
+    def active_clinical_facts(self, *, tenant_id: str, patient_id: str) -> list[dict]:
+        return [
+            {
+                "fact_key": "recent_procedure",
+                "summary": "Coronary stent placement on 2026-02-26.",
+                "fact_value": {"procedure": "coronary stent placement", "date": "2026-02-26"},
+                "source": "caregiver_reported",
+                "effective_at": None,
+            }
+        ]
+
+
 def _context() -> ParticipantContext:
     return ParticipantContext(
         tenant_id="tenant-1",
@@ -96,6 +109,7 @@ def test_handle_prefers_openresponses_and_includes_med_grounding(monkeypatch) ->
         responses_path="/v1/responses",
         gateway_token="token-1",
         win_service=_FakeWinService(),
+        patient_context_service=_FakePatientContextService(),
     )
 
     result = engine.handle("Which of these are blood thinners?", _context())
@@ -106,6 +120,8 @@ def test_handle_prefers_openresponses_and_includes_med_grounding(monkeypatch) ->
     assert "Brilinta 90mg" in prompt
     assert "Pantoprazole 40mg" in prompt
     assert "Sorbitrate 5mg (SOS)" in prompt
+    assert "Coronary stent placement on 2026-02-26." in prompt
+    assert "careos_get_clinical_facts" in prompt
     assert "careos_get_medications" in prompt
     assert "blood thinners" in prompt
 
@@ -121,6 +137,7 @@ def test_handle_remote_payload_includes_grounding_and_tool_hints(monkeypatch) ->
         base_url="http://openclaw.example",
         gateway_token="",
         win_service=_FakeWinService(),
+        patient_context_service=_FakePatientContextService(),
     )
     monkeypatch.setattr(engine, "_call_remote", _fake_remote)
 
@@ -128,8 +145,9 @@ def test_handle_remote_payload_includes_grounding_and_tool_hints(monkeypatch) ->
 
     assert result == CommandResult(action="openclaw_fallback", text="Remote answer")
     payload = captured["payload"]  # type: ignore[assignment]
-    assert payload["tool_hints"] == ["careos_get_medications", "careos_get_today", "careos_get_status"]
+    assert payload["tool_hints"] == ["careos_get_clinical_facts", "careos_get_medications", "careos_get_today", "careos_get_status"]
     assert payload["grounding"]["active_medications"]  # type: ignore[index]
+    assert payload["grounding"]["clinical_facts"]  # type: ignore[index]
     assert any(
         row["category"] == "blood thinner" for row in payload["grounding"]["medication_knowledge"]  # type: ignore[index]
     )
