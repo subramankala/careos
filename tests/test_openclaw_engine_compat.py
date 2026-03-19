@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from urllib.error import URLError
 
 from careos.domain.enums.core import PersonaType, Role, WinState
 from careos.domain.models.api import CommandResult, ParticipantContext
@@ -151,3 +152,28 @@ def test_handle_remote_payload_includes_grounding_and_tool_hints(monkeypatch) ->
     assert any(
         row["category"] == "blood thinner" for row in payload["grounding"]["medication_knowledge"]  # type: ignore[index]
     )
+
+
+def test_openresponses_retries_once_on_transport_error(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _fake_urlopen(req, timeout=0):  # noqa: ANN001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise URLError("temporary failure")
+        return _FakeResponse({"text": "Recovered answer", "action": "openclaw_fallback"})
+
+    monkeypatch.setattr("careos.conversation.openclaw_engine.urlopen", _fake_urlopen)
+    monkeypatch.setattr("careos.conversation.openclaw_engine.sleep", lambda seconds: None)
+    engine = OpenClawConversationEngine(
+        base_url="http://127.0.0.1:8115",
+        responses_path="/v1/responses",
+        gateway_token="token-1",
+        win_service=_FakeWinService(),
+        patient_context_service=_FakePatientContextService(),
+    )
+
+    result = engine.handle("Is it usual to take blood thinners at my age?", _context())
+
+    assert result == CommandResult(action="openclaw_fallback", text="Recovered answer")
+    assert calls["count"] == 2

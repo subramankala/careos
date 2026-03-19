@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from time import sleep
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -343,28 +344,39 @@ class OpenClawConversationEngine(ConversationEngine):
                 "Authorization": f"Bearer {self.gateway_token}",
             },
         )
-        try:
-            with urlopen(req, timeout=self.timeout_seconds) as resp:  # noqa: S310
-                data = json.loads(resp.read().decode("utf-8"))
-        except HTTPError as exc:
-            logger.warning(
-                "nl_fallback_unavailable",
-                reason=f"openresponses_http_{exc.code}",
-                base_url=self.base_url,
-                path=self.responses_path,
-                patient_id=context.patient_id,
-                participant_id=context.participant_id,
-            )
-            return CommandResult(action="unavailable", text="")
-        except (URLError, OSError, ValueError):
-            logger.exception(
-                "nl_fallback_unavailable",
-                reason="openresponses_transport_or_parse_error",
-                base_url=self.base_url,
-                path=self.responses_path,
-                patient_id=context.patient_id,
-                participant_id=context.participant_id,
-            )
+        data: dict | None = None
+        for attempt in range(2):
+            try:
+                with urlopen(req, timeout=self.timeout_seconds) as resp:  # noqa: S310
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except HTTPError as exc:
+                logger.warning(
+                    "nl_fallback_unavailable",
+                    reason=f"openresponses_http_{exc.code}",
+                    base_url=self.base_url,
+                    path=self.responses_path,
+                    patient_id=context.patient_id,
+                    participant_id=context.participant_id,
+                    attempt=attempt + 1,
+                )
+                return CommandResult(action="unavailable", text="")
+            except (URLError, OSError, ValueError):
+                logger.exception(
+                    "nl_fallback_unavailable",
+                    reason="openresponses_transport_or_parse_error",
+                    base_url=self.base_url,
+                    path=self.responses_path,
+                    patient_id=context.patient_id,
+                    participant_id=context.participant_id,
+                    attempt=attempt + 1,
+                )
+                if attempt == 0:
+                    sleep(0.2)
+                    continue
+                return CommandResult(action="unavailable", text="")
+
+        if data is None:
             return CommandResult(action="unavailable", text="")
 
         text_reply, action = self._extract_text(data)
