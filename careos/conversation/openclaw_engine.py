@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,6 +17,75 @@ logger = get_logger("openclaw_engine")
 
 
 class OpenClawConversationEngine(ConversationEngine):
+    _MEDICATION_KNOWLEDGE: tuple[dict[str, object], ...] = (
+        {
+            "aliases": ("ecosprin", "aspirin", "brilinta", "ticagrelor"),
+            "category": "blood thinner",
+            "clinical_class": "antiplatelet",
+            "purpose": "helps reduce blood clot risk after heart or vessel events",
+        },
+        {
+            "aliases": ("pantop", "pantoprazole"),
+            "category": "stomach acid control",
+            "clinical_class": "proton pump inhibitor",
+            "purpose": "reduces stomach acid and protects against acidity or reflux",
+        },
+        {
+            "aliases": ("cardivas", "carvedilol"),
+            "category": "blood pressure / heart support",
+            "clinical_class": "beta blocker",
+            "purpose": "helps control blood pressure and reduce strain on the heart",
+        },
+        {
+            "aliases": ("nikoran", "nicorandil"),
+            "category": "heart / angina support",
+            "clinical_class": "anti-anginal vasodilator",
+            "purpose": "helps prevent or relieve chest pain from reduced heart blood flow",
+        },
+        {
+            "aliases": ("dytor", "torsemide", "torasemide"),
+            "category": "fluid control / blood pressure",
+            "clinical_class": "diuretic",
+            "purpose": "helps remove extra fluid and can support blood pressure control",
+        },
+        {
+            "aliases": ("gener sita", "metformin", "sitagliptin"),
+            "category": "diabetes control",
+            "clinical_class": "blood sugar lowering medication",
+            "purpose": "helps control blood glucose",
+        },
+        {
+            "aliases": ("aztor", "atorvastatin"),
+            "category": "cholesterol control",
+            "clinical_class": "statin",
+            "purpose": "helps lower cholesterol and reduce cardiovascular risk",
+        },
+        {
+            "aliases": ("cremafin",),
+            "category": "constipation relief",
+            "clinical_class": "laxative",
+            "purpose": "helps bowel movement and constipation relief",
+        },
+        {
+            "aliases": ("sorbitrate", "nitroglycerin"),
+            "category": "angina rescue",
+            "clinical_class": "nitrate vasodilator",
+            "purpose": "used for chest pain relief",
+        },
+        {
+            "aliases": ("t-bact", "mupirocin"),
+            "category": "wound / skin infection care",
+            "clinical_class": "topical antibiotic",
+            "purpose": "helps treat or prevent localized skin infection",
+        },
+        {
+            "aliases": ("advil pm", "ibuprofen"),
+            "category": "pain relief / sleep aid",
+            "clinical_class": "pain reliever combination",
+            "purpose": "helps with pain and nighttime sleep support",
+        },
+    )
+
     """OpenClaw fallback engine.
 
     Expected OpenClaw endpoint contract:
@@ -79,6 +148,105 @@ class OpenClawConversationEngine(ConversationEngine):
             ordered.append(cleaned)
         return ordered
 
+    @classmethod
+    def _match_medication_knowledge(cls, name: str) -> dict[str, str] | None:
+        normalized = " ".join(str(name).strip().lower().split())
+        if not normalized:
+            return None
+        for entry in cls._MEDICATION_KNOWLEDGE:
+            aliases = tuple(str(alias).lower() for alias in entry.get("aliases", ()))
+            if any(alias in normalized for alias in aliases):
+                return {
+                    "matched_name": str(name),
+                    "category": str(entry["category"]),
+                    "clinical_class": str(entry["clinical_class"]),
+                    "purpose": str(entry["purpose"]),
+                }
+        return None
+
+    def _grounding_context(self, context: ParticipantContext) -> dict[str, object]:
+        if self.win_service is None:
+            return {
+                "active_medications": [],
+                "prn_medications": [],
+                "medication_knowledge": [],
+                "tool_hints": [
+                    "careos_get_medications",
+                    "careos_get_today",
+                    "careos_get_status",
+                ],
+            }
+        now = datetime.now(UTC)
+        today = self.win_service.today(context.patient_id, at=now)
+        active_medications: list[dict[str, str]] = []
+        knowledge_rows: list[dict[str, str]] = []
+        seen_knowledge: set[str] = set()
+        for item in today.timeline:
+            if item.category.strip().lower() != "medication":
+                continue
+            active_medications.append(
+                {
+                    "name": item.title,
+                    "scheduled_start": item.scheduled_start.isoformat(),
+                    "status": item.current_state.value,
+                }
+            )
+            knowledge = self._match_medication_knowledge(item.title)
+            if knowledge is None:
+                continue
+            key = knowledge["matched_name"].casefold()
+            if key in seen_knowledge:
+                continue
+            seen_knowledge.add(key)
+            knowledge_rows.append(knowledge)
+        prn_medications = [
+            {
+                "name": str(item.get("title", "")),
+                "instructions": str(item.get("instructions", "")),
+            }
+            for item in self.win_service.prn_definitions(context.patient_id)
+        ]
+        for item in prn_medications:
+            knowledge = self._match_medication_knowledge(item["name"])
+            if knowledge is None:
+                continue
+            key = knowledge["matched_name"].casefold()
+            if key in seen_knowledge:
+                continue
+            seen_knowledge.add(key)
+            knowledge_rows.append(knowledge)
+        return {
+            "generated_at_utc": now.isoformat(),
+            "active_medications": active_medications,
+            "prn_medications": prn_medications,
+            "medication_knowledge": knowledge_rows,
+            "tool_hints": [
+                "careos_get_medications",
+                "careos_get_today",
+                "careos_get_status",
+            ],
+        }
+
+    def _build_openresponses_prompt(self, text: str, context: ParticipantContext) -> str:
+        grounding = self._grounding_context(context)
+        return (
+            "You are a CareOS assistant. Use only the provided care context and grounded medication context. "
+            "Answer concisely and do not invent facts.\n"
+            "For medication questions, answer from the patient's current medication list first. "
+            "If the user asks which medicines are blood thinners or asks to categorize medicines by purpose, "
+            "use the active medications and medication knowledge below. "
+            "Treat the medication knowledge as common-use guidance, not a patient-specific prescribing instruction. "
+            "If a classification is uncertain, say which medication is uncertain instead of giving a generic refusal.\n"
+            "If the runtime supports CareOS MCP tools, prefer these read tools for grounding: "
+            "careos_get_medications, careos_get_today, careos_get_status.\n"
+            f"Now (UTC): {datetime.utcnow().isoformat()}Z\n"
+            f"Tenant: {context.tenant_id}\n"
+            f"Participant: {context.participant_id} ({context.participant_role.value})\n"
+            f"Patient: {context.patient_id}, timezone={context.patient_timezone}, persona={context.patient_persona.value}\n"
+            f"Grounded context JSON: {json.dumps(grounding, sort_keys=True)}\n"
+            f"User message: {text}"
+        )
+
     @staticmethod
     def _extract_text(data: object) -> tuple[str, str]:
         if isinstance(data, dict):
@@ -128,14 +296,7 @@ class OpenClawConversationEngine(ConversationEngine):
         if not self.gateway_token:
             return CommandResult(action="unavailable", text="")
 
-        prompt = (
-            "You are a CareOS assistant. Use the provided care context, answer concisely, and do not invent facts.\n"
-            f"Now (UTC): {datetime.utcnow().isoformat()}Z\n"
-            f"Tenant: {context.tenant_id}\n"
-            f"Participant: {context.participant_id} ({context.participant_role.value})\n"
-            f"Patient: {context.patient_id}, timezone={context.patient_timezone}, persona={context.patient_persona.value}\n"
-            f"User message: {text}"
-        )
+        prompt = self._build_openresponses_prompt(text, context)
         payload = {
             "model": "openclaw:main",
             "stream": False,
@@ -262,6 +423,9 @@ class OpenClawConversationEngine(ConversationEngine):
         if not self.base_url:
             logger.warning("nl_fallback_unavailable", reason="missing_base_url")
             return CommandResult(action="unavailable", text="")
+        via_openresponses = self._call_openresponses(text, context)
+        if via_openresponses.action != "unavailable" and via_openresponses.text.strip():
+            return via_openresponses
         if self._is_local_bridge_url() and self.win_service is not None:
             mapped_intent = fallback_intent(text)
             logger.info(
@@ -281,6 +445,7 @@ class OpenClawConversationEngine(ConversationEngine):
                 )
             return CommandResult(action="openclaw_fallback", text=local_text)
 
+        grounding = self._grounding_context(context)
         payload = {
             "text": text,
             "participant_context": {
@@ -292,5 +457,12 @@ class OpenClawConversationEngine(ConversationEngine):
                 "patient_persona": context.patient_persona.value,
             },
             "allowed_actions": ["read", "write_via_mcp"],
+            "grounding": grounding,
+            "tool_hints": grounding.get("tool_hints", []),
+            "response_guidance": {
+                "answer_from_current_medications_first": True,
+                "use_common_medication_purpose_guidance_when_available": True,
+                "avoid_generic_refusal_when_grounding_is_present": True,
+            },
         }
         return self._call_remote(payload, context)

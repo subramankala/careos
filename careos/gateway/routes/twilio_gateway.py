@@ -72,6 +72,7 @@ _WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 openclaw_delegate = OpenClawConversationEngine(
     base_url=(settings.gateway_openclaw_base_url or settings.openclaw_base_url or "").strip(),
     timeout_seconds=settings.openclaw_timeout_seconds,
+    win_service=app_context.win_service,
     fallback_path=(
         settings.gateway_openclaw_fallback_path
         or settings.openclaw_fallback_path
