@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -40,6 +40,18 @@ class PatientObservationCreateRequest(BaseModel):
     summary: str
     source: str = "caregiver_reported"
     observed_at: datetime | None = None
+    expires_at: datetime
+
+
+class PatientDayPlanCreateRequest(BaseModel):
+    tenant_id: str
+    patient_id: str
+    actor_participant_id: str
+    plan_key: str
+    plan_value: dict = Field(default_factory=dict)
+    summary: str
+    source: str = "caregiver_reported"
+    plan_date: str
     expires_at: datetime
 
 
@@ -497,6 +509,54 @@ def create_patient_observation(payload: PatientObservationCreateRequest) -> dict
 @router.get("/internal/patient-context/observations/active")
 def list_active_patient_observations(tenant_id: str = Query(...), patient_id: str = Query(...)) -> dict:
     return {"observations": context.patient_context.active_observations(tenant_id=tenant_id, patient_id=patient_id)}
+
+
+@router.post("/internal/patient-context/day-plans")
+def create_patient_day_plan(payload: PatientDayPlanCreateRequest) -> dict:
+    try:
+        return context.patient_context.upsert_day_plan(
+            tenant_id=payload.tenant_id,
+            patient_id=payload.patient_id,
+            actor_participant_id=payload.actor_participant_id,
+            plan_key=payload.plan_key,
+            plan_value=payload.plan_value,
+            summary=payload.summary,
+            source=payload.source,
+            plan_date=date.fromisoformat(payload.plan_date),
+            expires_at=payload.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/internal/patient-context/day-plans/active")
+def list_active_patient_day_plans(
+    tenant_id: str = Query(...),
+    patient_id: str = Query(...),
+    plan_date: str | None = Query(default=None),
+) -> dict:
+    parsed_date = date.fromisoformat(plan_date) if plan_date else None
+    return {"plans": context.patient_context.active_day_plans(tenant_id=tenant_id, patient_id=patient_id, plan_date=parsed_date)}
+
+
+@router.delete("/internal/patient-context/day-plans")
+def forget_patient_day_plan(
+    tenant_id: str = Query(...),
+    patient_id: str = Query(...),
+    plan_key: str = Query(...),
+    plan_date: str | None = Query(default=None),
+) -> dict:
+    try:
+        parsed_date = date.fromisoformat(plan_date) if plan_date else None
+        row = context.patient_context.forget_day_plan(
+            tenant_id=tenant_id,
+            patient_id=patient_id,
+            plan_key=plan_key,
+            plan_date=parsed_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"plan": row}
 
 
 @router.get("/internal/personalization/rules/active")

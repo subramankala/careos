@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -101,3 +101,40 @@ def test_patient_context_service_lists_active_observations() -> None:
     assert len(active) == 1
     assert active[0]["id"] == inserted["id"]
     assert active[0]["observation_key"] == "sleep_last_night"
+
+
+def test_patient_context_service_lists_active_day_plans() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="A", type="family", timezone="UTC", status="active"))
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="P",
+            timezone="UTC",
+            primary_language="en",
+            persona_type="caregiver_managed_elder",
+            risk_level="medium",
+            status="active",
+        )
+    )
+
+    inserted = context.patient_context.upsert_day_plan(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        actor_participant_id="actor-1",
+        plan_key="doctor_visit",
+        plan_value={"time": "16:00"},
+        summary="doctor visit at 4 pm today",
+        source="caregiver_reported",
+        plan_date=date(2026, 3, 20),
+        expires_at=datetime(2026, 3, 20, 23, 59, 59, tzinfo=UTC),
+    )
+
+    active = context.patient_context.active_day_plans(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        plan_date=date(2026, 3, 20),
+        now=datetime(2026, 3, 20, 8, 0, tzinfo=UTC),
+    )
+    assert len(active) == 1
+    assert active[0]["id"] == inserted["id"]
+    assert active[0]["plan_key"] == "doctor_visit"

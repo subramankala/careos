@@ -414,6 +414,44 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def upsert_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        plan_key: str,
+        plan_value: dict,
+        summary: str,
+        source: str,
+        plan_date: date,
+        expires_at: datetime,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_active_patient_day_plans(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_date: date,
+        now: datetime,
+    ) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def deactivate_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_key: str,
+        plan_date: date,
+    ) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def log_mediation_decision(
         self,
         *,
@@ -457,6 +495,7 @@ class InMemoryStore(Store):
         self.personalization_rules: dict[str, dict] = {}
         self.patient_clinical_facts: dict[str, dict] = {}
         self.patient_observations: dict[str, dict] = {}
+        self.patient_day_plans: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
 
@@ -1502,6 +1541,95 @@ class InMemoryStore(Store):
         ]
         rows.sort(key=lambda item: str(item["created_at"]))
         return rows
+
+    def upsert_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        plan_key: str,
+        plan_value: dict,
+        summary: str,
+        source: str,
+        plan_date: date,
+        expires_at: datetime,
+    ) -> dict:
+        normalized_key = str(plan_key).strip().lower()
+        for plan in self.patient_day_plans.values():
+            if str(plan["tenant_id"]) != str(tenant_id):
+                continue
+            if str(plan["patient_id"]) != str(patient_id):
+                continue
+            if str(plan["plan_key"]).strip().lower() != normalized_key:
+                continue
+            if str(plan["plan_date"]) != plan_date.isoformat():
+                continue
+            if str(plan.get("status", "active")) != "active":
+                continue
+            plan["status"] = "superseded"
+        plan_id = str(uuid4())
+        row = {
+            "id": plan_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "actor_participant_id": str(actor_participant_id),
+            "plan_key": normalized_key,
+            "plan_value": dict(plan_value or {}),
+            "summary": str(summary).strip(),
+            "source": str(source).strip() or "caregiver_reported",
+            "plan_date": plan_date.isoformat(),
+            "expires_at": _ensure_utc(expires_at),
+            "status": "active",
+            "created_at": datetime.now(UTC),
+        }
+        self.patient_day_plans[plan_id] = row
+        return dict(row)
+
+    def list_active_patient_day_plans(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_date: date,
+        now: datetime,
+    ) -> list[dict]:
+        now_utc = _ensure_utc(now)
+        rows = [
+            dict(plan)
+            for plan in self.patient_day_plans.values()
+            if str(plan["tenant_id"]) == str(tenant_id)
+            and str(plan["patient_id"]) == str(patient_id)
+            and str(plan.get("status", "active")) == "active"
+            and str(plan["plan_date"]) == plan_date.isoformat()
+            and _ensure_dt(plan["expires_at"]) > now_utc
+        ]
+        rows.sort(key=lambda item: str(item["created_at"]))
+        return rows
+
+    def deactivate_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_key: str,
+        plan_date: date,
+    ) -> dict | None:
+        normalized_key = str(plan_key).strip().lower()
+        candidates = [
+            plan
+            for plan in self.patient_day_plans.values()
+            if str(plan["tenant_id"]) == str(tenant_id)
+            and str(plan["patient_id"]) == str(patient_id)
+            and str(plan.get("status", "active")) == "active"
+            and str(plan["plan_key"]).strip().lower() == normalized_key
+            and str(plan["plan_date"]) == plan_date.isoformat()
+        ]
+        if not candidates:
+            return None
+        latest = sorted(candidates, key=lambda item: str(item["created_at"]))[-1]
+        latest["status"] = "forgotten"
+        return dict(latest)
 
     def log_mediation_decision(
         self,
@@ -2925,6 +3053,107 @@ class PostgresStore(Store):
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
             cur.execute(sql, (tenant_id, patient_id, _ensure_utc(now)))
             return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def upsert_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        plan_key: str,
+        plan_value: dict,
+        summary: str,
+        source: str,
+        plan_date: date,
+        expires_at: datetime,
+    ) -> dict:
+        normalized_key = str(plan_key).strip().lower()
+        deactivate_sql = """
+        UPDATE patient_day_plans
+        SET status = 'superseded'
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND lower(plan_key) = %s
+          AND plan_date = %s
+          AND status = 'active'
+        """
+        insert_sql = """
+        INSERT INTO patient_day_plans
+        (tenant_id, patient_id, actor_participant_id, plan_key, plan_value, summary, source, plan_date, expires_at, status)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'active')
+        RETURNING id, tenant_id, patient_id, actor_participant_id, plan_key, plan_value, summary, source,
+                  plan_date, expires_at, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(deactivate_sql, (tenant_id, patient_id, normalized_key, plan_date))
+            cur.execute(
+                insert_sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    actor_participant_id,
+                    normalized_key,
+                    json.dumps(plan_value or {}),
+                    str(summary).strip(),
+                    str(source).strip() or "caregiver_reported",
+                    plan_date,
+                    _ensure_utc(expires_at),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def list_active_patient_day_plans(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_date: date,
+        now: datetime,
+    ) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, actor_participant_id, plan_key, plan_value, summary, source,
+               plan_date, expires_at, status, created_at
+        FROM patient_day_plans
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND plan_date = %s
+          AND status = 'active'
+          AND expires_at > %s
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id, plan_date, _ensure_utc(now)))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def deactivate_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_key: str,
+        plan_date: date,
+    ) -> dict | None:
+        sql = """
+        UPDATE patient_day_plans
+        SET status = 'forgotten'
+        WHERE id = (
+            SELECT id
+            FROM patient_day_plans
+            WHERE tenant_id = %s
+              AND patient_id = %s
+              AND lower(plan_key) = %s
+              AND plan_date = %s
+              AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id, tenant_id, patient_id, actor_participant_id, plan_key, plan_value, summary, source,
+                  plan_date, expires_at, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id, str(plan_key).strip().lower(), plan_date))
+            row = cur.fetchone()
+            return _row_dict(cur, row) if row is not None else None
 
     def log_mediation_decision(
         self,

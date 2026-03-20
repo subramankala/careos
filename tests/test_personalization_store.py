@@ -144,3 +144,72 @@ def test_inmemory_patient_observations_respect_expiry() -> None:
     active = store.list_active_patient_observations(tenant_id="tenant-1", patient_id="patient-1", now=now)
     assert len(active) == 1
     assert active[0]["observation_key"] == "sleep_last_night"
+
+
+def test_inmemory_patient_day_plans_upsert_latest_active_by_key_and_day() -> None:
+    store = InMemoryStore()
+    now = datetime.now(UTC)
+    first = store.upsert_patient_day_plan(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        plan_key="doctor_visit",
+        plan_value={"time": "16:00"},
+        summary="doctor visit at 4 pm today",
+        source="caregiver_reported",
+        plan_date=now.date(),
+        expires_at=now + timedelta(hours=6),
+    )
+    second = store.upsert_patient_day_plan(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        plan_key="doctor_visit",
+        plan_value={"time": "17:00"},
+        summary="doctor visit moved to 5 pm today",
+        source="caregiver_reported",
+        plan_date=now.date(),
+        expires_at=now + timedelta(hours=7),
+    )
+
+    active = store.list_active_patient_day_plans(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        plan_date=now.date(),
+        now=now,
+    )
+    assert len(active) == 1
+    assert active[0]["id"] == second["id"]
+    assert store.patient_day_plans[first["id"]]["status"] == "superseded"
+
+
+def test_inmemory_patient_day_plans_can_be_forgotten() -> None:
+    store = InMemoryStore()
+    now = datetime.now(UTC)
+    inserted = store.upsert_patient_day_plan(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        plan_key="doctor_visit",
+        plan_value={"time": "16:00"},
+        summary="doctor visit at 4 pm today",
+        source="caregiver_reported",
+        plan_date=now.date(),
+        expires_at=now + timedelta(hours=6),
+    )
+    forgotten = store.deactivate_patient_day_plan(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        plan_key="doctor_visit",
+        plan_date=now.date(),
+    )
+    active = store.list_active_patient_day_plans(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        plan_date=now.date(),
+        now=now,
+    )
+    assert forgotten is not None
+    assert forgotten["id"] == inserted["id"]
+    assert forgotten["status"] == "forgotten"
+    assert active == []

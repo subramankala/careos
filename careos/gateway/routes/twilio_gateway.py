@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import re
 from hashlib import sha1
 from urllib.parse import parse_qs
@@ -162,6 +162,10 @@ def _end_of_local_day_utc(timezone_name: str, now_utc: datetime) -> datetime:
     return end_local.astimezone(UTC)
 
 
+def _local_date_for_timezone(timezone_name: str, at_utc: datetime) -> date:
+    return at_utc.astimezone(ZoneInfo(timezone_name)).date()
+
+
 def _parse_remember_command(text: str) -> tuple[str, str, bool] | None:
     match = re.fullmatch(r"\s*remember(?:\s+that)?\s+(.+?)\s*", text, flags=re.IGNORECASE)
     if match is None:
@@ -229,6 +233,48 @@ def _observation_expiry(summary: str, timezone_name: str, observed_at: datetime)
     return _end_of_local_day_utc(timezone_name, observed_at), "through today"
 
 
+def _derive_plan_key(summary: str) -> str:
+    tokens = [token for token in re.split(r"[^a-z0-9]+", summary.lower()) if token]
+    stop_words = {"i", "my", "me", "will", "be", "am", "the", "a", "an", "today", "tomorrow"}
+    informative = [token for token in tokens if token not in stop_words]
+    base = "_".join(informative[:5]).strip("_")
+    if not base:
+        digest = sha1(summary.encode("utf-8")).hexdigest()[:10]
+        return f"plan_{digest}"
+    return _normalize_fact_key(base)
+
+
+def _parse_plan_command(text: str) -> tuple[str, str, bool] | None:
+    match = re.fullmatch(r"\s*plan(?:\s+that)?\s+(.+?)\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    body = match.group(1).strip()
+    if not body:
+        return None
+    if ":" in body:
+        raw_key, summary = body.split(":", 1)
+        plan_key = _normalize_fact_key(raw_key)
+        summary = summary.strip()
+        if plan_key and summary:
+            return plan_key, summary, True
+    summary = body.strip()
+    if not summary:
+        return None
+    return _derive_plan_key(summary), summary, False
+
+
+def _infer_plan_date_and_expiry(summary: str, timezone_name: str, now_utc: datetime) -> tuple[date, datetime, str]:
+    normalized = " ".join(summary.strip().lower().split())
+    base_date = _local_date_for_timezone(timezone_name, now_utc)
+    label = "today"
+    if "tomorrow" in normalized:
+        base_date = base_date + timedelta(days=1)
+        label = "tomorrow"
+    tz = ZoneInfo(timezone_name)
+    end_local = datetime.combine(base_date, datetime.min.time(), tzinfo=tz).replace(hour=23, minute=59, second=59, microsecond=0)
+    return base_date, end_local.astimezone(UTC), label
+
+
 def _handle_note_command(text: str, context: dict) -> str | None:
     parsed = _parse_note_command(text)
     if parsed is None:
@@ -269,6 +315,79 @@ def _handle_list_observations(context: dict) -> str | None:
         summary = str(observation.get("summary", "")).strip()
         lines.append(f"{index}. {key}: {summary}")
     return "\n".join(lines)
+
+
+def _handle_plan_command(text: str, context: dict) -> str | None:
+    parsed = _parse_plan_command(text)
+    if parsed is None:
+        return None
+    plan_key, summary, explicit_key = parsed
+    now_utc = datetime.now(UTC)
+    plan_date, expires_at, label = _infer_plan_date_and_expiry(summary, str(context["patient_timezone"]), now_utc)
+    adapter.upsert_patient_day_plan(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+        actor_participant_id=str(context["participant_id"]),
+        plan_key=plan_key,
+        plan_value={
+            "statement": summary,
+            "detected_dates": _extract_detected_dates(summary),
+            "relative_scope": label,
+        },
+        summary=summary,
+        source=_remember_source_for_role(str(context["participant_role"])),
+        plan_date=plan_date.isoformat(),
+        expires_at_iso=expires_at.isoformat(),
+    )
+    if explicit_key:
+        return f"Planned under {plan_key} for {plan_date.isoformat()}: {summary}"
+    return f"Planned under {plan_key} for {plan_date.isoformat()}: {summary}"
+
+
+def _handle_list_day_plans(context: dict) -> str | None:
+    response = adapter.list_active_patient_day_plans(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+    )
+    plans = list(response.get("plans", []))
+    if not plans:
+        return "No active day plans are stored right now. Use 'plan ...' to add one."
+    lines = ["Active day plans:"]
+    for index, plan in enumerate(plans, start=1):
+        key = str(plan.get("plan_key", "")).strip()
+        summary = str(plan.get("summary", "")).strip()
+        date_label = str(plan.get("plan_date", "")).strip()
+        lines.append(f"{index}. {key} ({date_label}): {summary}")
+    return "\n".join(lines)
+
+
+def _handle_forget_plan_command(text: str, context: dict) -> str | None:
+    match = re.fullmatch(r"\s*forget\s+plan\s+(.+?)\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    target = match.group(1).strip()
+    response = adapter.list_active_patient_day_plans(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+    )
+    plans = list(response.get("plans", []))
+    if not plans:
+        return "No active day plans are stored right now."
+    plan_key = target.strip().lower()
+    if target.isdigit():
+        index = int(target)
+        if index < 1 or index > len(plans):
+            return "Plan number is out of range. Send 'plans' first."
+        plan_key = str(plans[index - 1].get("plan_key", "")).strip().lower()
+    deleted = adapter.forget_patient_day_plan(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+        plan_key=plan_key,
+    ).get("plan")
+    if not deleted:
+        return f"I could not find an active plan for {target}."
+    summary = str(deleted.get("summary", "")).strip()
+    return f"Forgot plan {plan_key}: {summary}"
 
 
 def _handle_remember_command(text: str, context: dict) -> str | None:
@@ -1099,12 +1218,21 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     if normalized in {"observations", "notes", "active observations"}:
         reply = _handle_list_observations(context)
         return Response(content=message_response(reply or "No observations available."), media_type="text/xml")
+    if normalized in {"plans", "day plans", "active plans"}:
+        reply = _handle_list_day_plans(context)
+        return Response(content=message_response(reply or "No plans available."), media_type="text/xml")
+    forget_plan_reply = _handle_forget_plan_command(text, context)
+    if forget_plan_reply is not None:
+        return Response(content=message_response(forget_plan_reply), media_type="text/xml")
     forget_reply = _handle_forget_command(text, context)
     if forget_reply is not None:
         return Response(content=message_response(forget_reply), media_type="text/xml")
     note_reply = _handle_note_command(text, context)
     if note_reply is not None:
         return Response(content=message_response(note_reply), media_type="text/xml")
+    plan_reply = _handle_plan_command(text, context)
+    if plan_reply is not None:
+        return Response(content=message_response(plan_reply), media_type="text/xml")
     remember_reply = _handle_remember_command(text, context)
     if remember_reply is not None:
         return Response(content=message_response(remember_reply), media_type="text/xml")

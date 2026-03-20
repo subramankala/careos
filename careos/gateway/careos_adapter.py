@@ -425,6 +425,60 @@ class CareOSAdapter:
             method="GET",
         )
 
+    def upsert_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        plan_key: str,
+        plan_value: dict[str, Any],
+        summary: str,
+        source: str = "caregiver_reported",
+        plan_date: str,
+        expires_at_iso: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "/internal/patient-context/day-plans",
+            method="POST",
+            payload={
+                "tenant_id": tenant_id,
+                "patient_id": patient_id,
+                "actor_participant_id": actor_participant_id,
+                "plan_key": plan_key,
+                "plan_value": dict(plan_value or {}),
+                "summary": summary,
+                "source": source,
+                "plan_date": plan_date,
+                "expires_at": expires_at_iso,
+            },
+        )
+
+    def list_active_patient_day_plans(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_date: str | None = None,
+    ) -> dict[str, Any]:
+        path = f"/internal/patient-context/day-plans/active?tenant_id={tenant_id}&patient_id={patient_id}"
+        if plan_date:
+            path += f"&plan_date={plan_date}"
+        return self._request(path, method="GET")
+
+    def forget_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        plan_key: str,
+        plan_date: str | None = None,
+    ) -> dict[str, Any]:
+        path = f"/internal/patient-context/day-plans?tenant_id={tenant_id}&patient_id={patient_id}&plan_key={plan_key}"
+        if plan_date:
+            path += f"&plan_date={plan_date}"
+        return self._request(path, method="DELETE")
+
     def log_mediation_decision(
         self,
         *,

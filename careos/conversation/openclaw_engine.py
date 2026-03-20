@@ -174,11 +174,13 @@ class OpenClawConversationEngine(ConversationEngine):
                 "active_medications": [],
                 "clinical_facts": [],
                 "recent_observations": [],
+                "day_plans": [],
                 "prn_medications": [],
                 "medication_knowledge": [],
                 "tool_hints": [
                     "careos_get_clinical_facts",
                     "careos_get_observations",
+                    "careos_get_day_plans",
                     "careos_get_medications",
                     "careos_get_today",
                     "careos_get_status",
@@ -225,6 +227,7 @@ class OpenClawConversationEngine(ConversationEngine):
             knowledge_rows.append(knowledge)
         clinical_facts: list[dict[str, object]] = []
         recent_observations: list[dict[str, object]] = []
+        day_plans: list[dict[str, object]] = []
         if self.patient_context_service is not None:
             rows = self.patient_context_service.active_clinical_facts(
                 tenant_id=context.tenant_id,
@@ -255,16 +258,33 @@ class OpenClawConversationEngine(ConversationEngine):
                 }
                 for row in observations
             ]
+            plans = self.patient_context_service.active_day_plans(
+                tenant_id=context.tenant_id,
+                patient_id=context.patient_id,
+            )
+            day_plans = [
+                {
+                    "plan_key": str(row.get("plan_key", "")),
+                    "summary": str(row.get("summary", "")),
+                    "plan_value": dict(row.get("plan_value") or {}),
+                    "source": str(row.get("source", "")),
+                    "plan_date": str(row.get("plan_date", "")),
+                    "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
+                }
+                for row in plans
+            ]
         return {
             "generated_at_utc": now.isoformat(),
             "active_medications": active_medications,
             "clinical_facts": clinical_facts,
             "recent_observations": recent_observations,
+            "day_plans": day_plans,
             "prn_medications": prn_medications,
             "medication_knowledge": knowledge_rows,
             "tool_hints": [
                 "careos_get_clinical_facts",
                 "careos_get_observations",
+                "careos_get_day_plans",
                 "careos_get_medications",
                 "careos_get_today",
                 "careos_get_status",
@@ -280,13 +300,15 @@ class OpenClawConversationEngine(ConversationEngine):
             "Treat them as patient-specific grounding context and prefer them over generic assumptions.\n"
             "If recent observations are provided, use them for same-day or near-term tailoring, but do not treat them "
             "as permanent history.\n"
+            "If day plans are provided, use them as practical context for the current day only; do not treat them as "
+            "future standing instructions unless the user says so.\n"
             "For medication questions, answer from the patient's current medication list first. "
             "If the user asks which medicines are blood thinners or asks to categorize medicines by purpose, "
             "use the active medications and medication knowledge below. "
             "Treat the medication knowledge as common-use guidance, not a patient-specific prescribing instruction. "
             "If a classification is uncertain, say which medication is uncertain instead of giving a generic refusal.\n"
             "If the runtime supports CareOS MCP tools, prefer these read tools for grounding: "
-            "careos_get_clinical_facts, careos_get_observations, careos_get_medications, careos_get_today, careos_get_status.\n"
+            "careos_get_clinical_facts, careos_get_observations, careos_get_day_plans, careos_get_medications, careos_get_today, careos_get_status.\n"
             f"Now (UTC): {datetime.utcnow().isoformat()}Z\n"
             f"Tenant: {context.tenant_id}\n"
             f"Participant: {context.participant_id} ({context.participant_role.value})\n"

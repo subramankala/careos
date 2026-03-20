@@ -94,6 +94,27 @@ def test_mcp_observations_read_tool_routes_to_internal_endpoint(monkeypatch) -> 
     assert calls == [("/internal/patient-context/observations/active?tenant_id=tenant-1&patient_id=p-123", "GET", None)]
 
 
+def test_mcp_day_plans_read_tool_routes_to_internal_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("CAREOS_MCP_API_KEY", "")
+
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def _fake_request(path: str, *, method: str = "GET", payload=None):
+        calls.append((path, method, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(mcp_server, "_request_json", _fake_request)
+
+    response = mcp_server.call_tool(
+        mcp_server.ToolCallRequest(
+            tool="careos_get_day_plans",
+            arguments={"tenant_id": "tenant-1", "patient_id": "p-123"},
+        )
+    )
+    assert response.ok is True
+    assert calls == [("/internal/patient-context/day-plans/active?tenant_id=tenant-1&patient_id=p-123", "GET", None)]
+
+
 def test_mcp_dashboard_access_tool_routes_to_internal_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("CAREOS_MCP_API_KEY", "")
 

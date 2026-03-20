@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, date, datetime
 from urllib.parse import urlencode
 
 from careos.domain.enums.core import Role
@@ -21,6 +22,7 @@ class _AdapterBase:
         self.pending_gateway_actions: dict[str, dict] = {}
         self.clinical_facts: list[dict] = []
         self.observations: list[dict] = []
+        self.day_plans: list[dict] = []
 
     def resolve_context(self, phone_number: str) -> dict | None:
         return {
@@ -249,6 +251,62 @@ class _AdapterBase:
             if row["tenant_id"] == tenant_id and row["patient_id"] == patient_id
         ]
         return {"observations": rows}
+
+    def upsert_patient_day_plan(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        plan_key: str,
+        plan_value: dict,
+        summary: str,
+        source: str = "caregiver_reported",
+        plan_date: str,
+        expires_at_iso: str,
+    ) -> dict:
+        self.day_plans = [
+            row for row in self.day_plans if not (row["plan_key"] == plan_key and row["plan_date"] == plan_date)
+        ]
+        payload = {
+            "id": f"plan-{plan_key}",
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "actor_participant_id": actor_participant_id,
+            "plan_key": plan_key,
+            "plan_value": dict(plan_value or {}),
+            "summary": summary,
+            "source": source,
+            "plan_date": plan_date,
+            "expires_at": expires_at_iso,
+            "status": "active",
+        }
+        self.day_plans.append(payload)
+        return dict(payload)
+
+    def list_active_patient_day_plans(self, *, tenant_id: str, patient_id: str, plan_date: str | None = None) -> dict:
+        rows = [
+            dict(row)
+            for row in self.day_plans
+            if row["tenant_id"] == tenant_id
+            and row["patient_id"] == patient_id
+            and (plan_date is None or row["plan_date"] == plan_date)
+        ]
+        return {"plans": rows}
+
+    def forget_patient_day_plan(self, *, tenant_id: str, patient_id: str, plan_key: str, plan_date: str | None = None) -> dict:
+        for row in self.day_plans:
+            if (
+                row["tenant_id"] == tenant_id
+                and row["patient_id"] == patient_id
+                and row["plan_key"] == plan_key
+                and (plan_date is None or row["plan_date"] == plan_date)
+            ):
+                self.day_plans = [item for item in self.day_plans if item is not row]
+                forgotten = dict(row)
+                forgotten["status"] = "forgotten"
+                return {"plan": forgotten}
+        return {"plan": None}
 
     def forget_patient_clinical_fact(self, *, tenant_id: str, patient_id: str, fact_key: str) -> dict:
         for row in self.clinical_facts:
@@ -1213,6 +1271,111 @@ def test_gateway_observations_command_lists_active_observations(monkeypatch) -> 
         assert response.status_code == 200
         assert b"Active observations:" in response.body
         assert b"slept_4_hours_last_night: slept 4 hours last night" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_plan_command_stores_day_plan(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        monkeypatch.setattr(
+            twilio_gateway,
+            "_infer_plan_date_and_expiry",
+            lambda summary, timezone_name, now_utc: (
+                date(2026, 3, 13),
+                datetime(2026, 3, 13, 18, 29, 59, tzinfo=UTC),
+                "tomorrow",
+            ),
+        )
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Plan out tomorrow afternoon",
+                "MessageSid": "SM-gw-plan-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Planned under out_afternoon" in response.body
+        assert b"for 2026-03-13" in response.body
+        assert len(adapter.day_plans) == 1
+        assert adapter.day_plans[0]["plan_key"] == "out_afternoon"
+        assert adapter.day_plans[0]["plan_date"] == "2026-03-13"
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_plans_command_lists_active_day_plans(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.day_plans = [
+        {
+            "id": "plan-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "plan_key": "doctor_visit",
+            "plan_value": {"statement": "doctor visit at 4 pm today"},
+            "summary": "doctor visit at 4 pm today",
+            "source": "caregiver_reported",
+            "plan_date": "2026-03-12",
+            "expires_at": "2026-03-12T18:29:59+00:00",
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "plans",
+                "MessageSid": "SM-gw-plan-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Active day plans:" in response.body
+        assert b"doctor_visit (2026-03-12): doctor visit at 4 pm today" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_forget_plan_command_removes_plan_by_number(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.day_plans = [
+        {
+            "id": "plan-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "plan_key": "doctor_visit",
+            "plan_value": {"statement": "doctor visit at 4 pm today"},
+            "summary": "doctor visit at 4 pm today",
+            "source": "caregiver_reported",
+            "plan_date": "2026-03-12",
+            "expires_at": "2026-03-12T18:29:59+00:00",
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "forget plan 1",
+                "MessageSid": "SM-gw-plan-3",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Forgot plan doctor_visit: doctor visit at 4 pm today" in response.body
+        assert adapter.day_plans == []
     finally:
         settings.gateway_conversation_mode = previous_mode
 

@@ -96,6 +96,18 @@ class _FakePatientContextService:
             }
         ]
 
+    def active_day_plans(self, *, tenant_id: str, patient_id: str, plan_date=None, now=None):  # noqa: ANN001
+        return [
+            {
+                "plan_key": "doctor_visit",
+                "summary": "doctor visit at 4 pm today",
+                "plan_value": {"time": "16:00"},
+                "source": "caregiver_reported",
+                "plan_date": "2026-03-19",
+                "expires_at": None,
+            }
+        ]
+
 
 def _context() -> ParticipantContext:
     return ParticipantContext(
@@ -136,7 +148,9 @@ def test_handle_prefers_openresponses_and_includes_med_grounding(monkeypatch) ->
     assert "Coronary stent placement on 2026-02-26." in prompt
     assert "careos_get_clinical_facts" in prompt
     assert "careos_get_observations" in prompt
+    assert "careos_get_day_plans" in prompt
     assert "slept 4 hours last night" in prompt
+    assert "doctor visit at 4 pm today" in prompt
     assert "careos_get_medications" in prompt
     assert "blood thinners" in prompt
 
@@ -160,10 +174,11 @@ def test_handle_remote_payload_includes_grounding_and_tool_hints(monkeypatch) ->
 
     assert result == CommandResult(action="openclaw_fallback", text="Remote answer")
     payload = captured["payload"]  # type: ignore[assignment]
-    assert payload["tool_hints"] == ["careos_get_clinical_facts", "careos_get_observations", "careos_get_medications", "careos_get_today", "careos_get_status"]
+    assert payload["tool_hints"] == ["careos_get_clinical_facts", "careos_get_observations", "careos_get_day_plans", "careos_get_medications", "careos_get_today", "careos_get_status"]
     assert payload["grounding"]["active_medications"]  # type: ignore[index]
     assert payload["grounding"]["clinical_facts"]  # type: ignore[index]
     assert payload["grounding"]["recent_observations"]  # type: ignore[index]
+    assert payload["grounding"]["day_plans"]  # type: ignore[index]
     assert any(
         row["category"] == "blood thinner" for row in payload["grounding"]["medication_knowledge"]  # type: ignore[index]
     )

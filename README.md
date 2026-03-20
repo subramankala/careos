@@ -68,6 +68,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_med
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0008_person_identity_and_memberships.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0009_patient_clinical_facts.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0010_patient_observations.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0011_patient_day_plans.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -129,6 +130,7 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0007_personalization_and_med
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0008_person_identity_and_memberships.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0009_patient_clinical_facts.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0010_patient_observations.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0011_patient_day_plans.sql
 ```
 
 ## Core endpoints
