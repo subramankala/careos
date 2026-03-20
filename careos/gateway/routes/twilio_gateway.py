@@ -155,6 +155,13 @@ def _extract_detected_dates(summary: str) -> list[str]:
     return re.findall(r"\b\d{4}-\d{2}-\d{2}\b", summary)
 
 
+def _end_of_local_day_utc(timezone_name: str, now_utc: datetime) -> datetime:
+    tz = ZoneInfo(timezone_name)
+    now_local = now_utc.astimezone(tz)
+    end_local = now_local.replace(hour=23, minute=59, second=59, microsecond=0)
+    return end_local.astimezone(UTC)
+
+
 def _parse_remember_command(text: str) -> tuple[str, str, bool] | None:
     match = re.fullmatch(r"\s*remember(?:\s+that)?\s+(.+?)\s*", text, flags=re.IGNORECASE)
     if match is None:
@@ -181,6 +188,87 @@ def _remember_source_for_role(role: str) -> str:
     if normalized == "clinician":
         return "clinician_reported"
     return "caregiver_reported"
+
+
+def _derive_observation_key(summary: str) -> str:
+    tokens = [token for token in re.split(r"[^a-z0-9]+", summary.lower()) if token]
+    stop_words = {"i", "my", "me", "is", "was", "were", "am", "the", "a", "an"}
+    informative = [token for token in tokens if token not in stop_words]
+    base = "_".join(informative[:5]).strip("_")
+    if not base:
+        digest = sha1(summary.encode("utf-8")).hexdigest()[:10]
+        return f"observation_{digest}"
+    return _normalize_fact_key(base)
+
+
+def _parse_note_command(text: str) -> tuple[str, str, bool] | None:
+    match = re.fullmatch(r"\s*note(?:\s+that)?\s+(.+?)\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    body = match.group(1).strip()
+    if not body:
+        return None
+    if ":" in body:
+        raw_key, summary = body.split(":", 1)
+        observation_key = _normalize_fact_key(raw_key)
+        summary = summary.strip()
+        if observation_key and summary:
+            return observation_key, summary, True
+    summary = body.strip()
+    if not summary:
+        return None
+    return _derive_observation_key(summary), summary, False
+
+
+def _observation_expiry(summary: str, timezone_name: str, observed_at: datetime) -> tuple[datetime, str]:
+    normalized = " ".join(summary.strip().lower().split())
+    if any(phrase in normalized for phrase in {"last night", "this morning", "this afternoon"}):
+        return observed_at + timedelta(hours=30), "about the next 30 hours"
+    if "today" in normalized:
+        return _end_of_local_day_utc(timezone_name, observed_at), "through today"
+    return _end_of_local_day_utc(timezone_name, observed_at), "through today"
+
+
+def _handle_note_command(text: str, context: dict) -> str | None:
+    parsed = _parse_note_command(text)
+    if parsed is None:
+        return None
+    observation_key, summary, explicit_key = parsed
+    observed_at = datetime.now(UTC)
+    expires_at, expiry_label = _observation_expiry(summary, str(context["patient_timezone"]), observed_at)
+    adapter.create_patient_observation(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+        actor_participant_id=str(context["participant_id"]),
+        observation_key=observation_key,
+        observation_value={
+            "statement": summary,
+            "detected_dates": _extract_detected_dates(summary),
+        },
+        summary=summary,
+        source=_remember_source_for_role(str(context["participant_role"])),
+        observed_at_iso=observed_at.isoformat(),
+        expires_at_iso=expires_at.isoformat(),
+    )
+    if explicit_key:
+        return f"Noted under {observation_key}: {summary}\nI will use this for {expiry_label}."
+    return f"Noted under {observation_key}: {summary}\nI will use this for {expiry_label}."
+
+
+def _handle_list_observations(context: dict) -> str | None:
+    response = adapter.list_active_patient_observations(
+        tenant_id=str(context["tenant_id"]),
+        patient_id=str(context["patient_id"]),
+    )
+    observations = list(response.get("observations", []))
+    if not observations:
+        return "No active observations are stored right now. Use 'note ...' to add one."
+    lines = ["Active observations:"]
+    for index, observation in enumerate(observations, start=1):
+        key = str(observation.get("observation_key", "")).strip()
+        summary = str(observation.get("summary", "")).strip()
+        lines.append(f"{index}. {key}: {summary}")
+    return "\n".join(lines)
 
 
 def _handle_remember_command(text: str, context: dict) -> str | None:
@@ -1008,9 +1096,15 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     if normalized in {"facts", "clinical facts", "remembered facts"}:
         reply = _handle_list_clinical_facts(context)
         return Response(content=message_response(reply or "No clinical facts available."), media_type="text/xml")
+    if normalized in {"observations", "notes", "active observations"}:
+        reply = _handle_list_observations(context)
+        return Response(content=message_response(reply or "No observations available."), media_type="text/xml")
     forget_reply = _handle_forget_command(text, context)
     if forget_reply is not None:
         return Response(content=message_response(forget_reply), media_type="text/xml")
+    note_reply = _handle_note_command(text, context)
+    if note_reply is not None:
+        return Response(content=message_response(note_reply), media_type="text/xml")
     remember_reply = _handle_remember_command(text, context)
     if remember_reply is not None:
         return Response(content=message_response(remember_reply), media_type="text/xml")

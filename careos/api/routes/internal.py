@@ -31,6 +31,18 @@ class PatientClinicalFactCreateRequest(BaseModel):
     effective_at: datetime | None = None
 
 
+class PatientObservationCreateRequest(BaseModel):
+    tenant_id: str
+    patient_id: str
+    actor_participant_id: str
+    observation_key: str
+    observation_value: dict = Field(default_factory=dict)
+    summary: str
+    source: str = "caregiver_reported"
+    observed_at: datetime | None = None
+    expires_at: datetime
+
+
 class MediationDecisionLogRequest(BaseModel):
     event_id: str
     tenant_id: str
@@ -462,6 +474,29 @@ def forget_patient_clinical_fact(tenant_id: str = Query(...), patient_id: str = 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"fact": row}
+
+
+@router.post("/internal/patient-context/observations")
+def create_patient_observation(payload: PatientObservationCreateRequest) -> dict:
+    try:
+        return context.patient_context.add_observation(
+            tenant_id=payload.tenant_id,
+            patient_id=payload.patient_id,
+            actor_participant_id=payload.actor_participant_id,
+            observation_key=payload.observation_key,
+            observation_value=payload.observation_value,
+            summary=payload.summary,
+            source=payload.source,
+            observed_at=payload.observed_at,
+            expires_at=payload.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/internal/patient-context/observations/active")
+def list_active_patient_observations(tenant_id: str = Query(...), patient_id: str = Query(...)) -> dict:
+    return {"observations": context.patient_context.active_observations(tenant_id=tenant_id, patient_id=patient_id)}
 
 
 @router.get("/internal/personalization/rules/active")

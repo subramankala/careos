@@ -84,6 +84,18 @@ class _FakePatientContextService:
             }
         ]
 
+    def active_observations(self, *, tenant_id: str, patient_id: str) -> list[dict]:
+        return [
+            {
+                "observation_key": "slept_4_hours_last_night",
+                "summary": "slept 4 hours last night",
+                "observation_value": {"hours": 4},
+                "source": "caregiver_reported",
+                "observed_at": None,
+                "expires_at": None,
+            }
+        ]
+
 
 def _context() -> ParticipantContext:
     return ParticipantContext(
@@ -123,6 +135,8 @@ def test_handle_prefers_openresponses_and_includes_med_grounding(monkeypatch) ->
     assert "Sorbitrate 5mg (SOS)" in prompt
     assert "Coronary stent placement on 2026-02-26." in prompt
     assert "careos_get_clinical_facts" in prompt
+    assert "careos_get_observations" in prompt
+    assert "slept 4 hours last night" in prompt
     assert "careos_get_medications" in prompt
     assert "blood thinners" in prompt
 
@@ -146,9 +160,10 @@ def test_handle_remote_payload_includes_grounding_and_tool_hints(monkeypatch) ->
 
     assert result == CommandResult(action="openclaw_fallback", text="Remote answer")
     payload = captured["payload"]  # type: ignore[assignment]
-    assert payload["tool_hints"] == ["careos_get_clinical_facts", "careos_get_medications", "careos_get_today", "careos_get_status"]
+    assert payload["tool_hints"] == ["careos_get_clinical_facts", "careos_get_observations", "careos_get_medications", "careos_get_today", "careos_get_status"]
     assert payload["grounding"]["active_medications"]  # type: ignore[index]
     assert payload["grounding"]["clinical_facts"]  # type: ignore[index]
+    assert payload["grounding"]["recent_observations"]  # type: ignore[index]
     assert any(
         row["category"] == "blood thinner" for row in payload["grounding"]["medication_knowledge"]  # type: ignore[index]
     )

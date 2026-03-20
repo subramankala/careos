@@ -20,6 +20,7 @@ class _AdapterBase:
         self.timeline: list[dict] = []
         self.pending_gateway_actions: dict[str, dict] = {}
         self.clinical_facts: list[dict] = []
+        self.observations: list[dict] = []
 
     def resolve_context(self, phone_number: str) -> dict | None:
         return {
@@ -211,6 +212,43 @@ class _AdapterBase:
             if row["tenant_id"] == tenant_id and row["patient_id"] == patient_id
         ]
         return {"facts": rows}
+
+    def create_patient_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict,
+        summary: str,
+        source: str = "caregiver_reported",
+        observed_at_iso: str | None = None,
+        expires_at_iso: str,
+    ) -> dict:
+        payload = {
+            "id": f"obs-{len(self.observations)+1}",
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "actor_participant_id": actor_participant_id,
+            "observation_key": observation_key,
+            "observation_value": dict(observation_value or {}),
+            "summary": summary,
+            "source": source,
+            "observed_at": observed_at_iso,
+            "expires_at": expires_at_iso,
+            "status": "active",
+        }
+        self.observations.append(payload)
+        return dict(payload)
+
+    def list_active_patient_observations(self, *, tenant_id: str, patient_id: str) -> dict:
+        rows = [
+            dict(row)
+            for row in self.observations
+            if row["tenant_id"] == tenant_id and row["patient_id"] == patient_id
+        ]
+        return {"observations": rows}
 
     def forget_patient_clinical_fact(self, *, tenant_id: str, patient_id: str, fact_key: str) -> dict:
         for row in self.clinical_facts:
@@ -1116,6 +1154,65 @@ def test_gateway_facts_command_lists_clinical_facts(monkeypatch) -> None:
         assert response.status_code == 200
         assert b"Remembered clinical facts:" in response.body
         assert b"recent_procedure: Coronary stent placement on 2026-02-26" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_note_command_stores_observation(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Note slept 4 hours last night",
+                "MessageSid": "SM-gw-note-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Noted under slept_4_hours_last_night" in response.body
+        assert b"about the next 30 hours" in response.body
+        assert len(adapter.observations) == 1
+        assert adapter.observations[0]["observation_key"] == "slept_4_hours_last_night"
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_observations_command_lists_active_observations(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.observations = [
+        {
+            "id": "obs-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "actor_participant_id": "participant-1",
+            "observation_key": "slept_4_hours_last_night",
+            "observation_value": {"statement": "slept 4 hours last night"},
+            "summary": "slept 4 hours last night",
+            "source": "caregiver_reported",
+            "observed_at": "2026-03-20T06:00:00+00:00",
+            "expires_at": "2026-03-21T12:00:00+00:00",
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "observations",
+                "MessageSid": "SM-gw-note-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Active observations:" in response.body
+        assert b"slept_4_hours_last_night: slept 4 hours last night" in response.body
     finally:
         settings.gateway_conversation_mode = previous_mode
 

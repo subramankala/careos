@@ -394,6 +394,26 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def create_patient_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict,
+        summary: str,
+        source: str,
+        observed_at: datetime,
+        expires_at: datetime,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_active_patient_observations(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
     def log_mediation_decision(
         self,
         *,
@@ -436,6 +456,7 @@ class InMemoryStore(Store):
         self.caregiver_verification_requests: dict[str, dict] = {}
         self.personalization_rules: dict[str, dict] = {}
         self.patient_clinical_facts: dict[str, dict] = {}
+        self.patient_observations: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
 
@@ -1437,6 +1458,50 @@ class InMemoryStore(Store):
         latest = sorted(candidates, key=lambda item: str(item["created_at"]))[-1]
         latest["status"] = "forgotten"
         return dict(latest)
+
+    def create_patient_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict,
+        summary: str,
+        source: str,
+        observed_at: datetime,
+        expires_at: datetime,
+    ) -> dict:
+        observation_id = str(uuid4())
+        row = {
+            "id": observation_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "actor_participant_id": str(actor_participant_id),
+            "observation_key": str(observation_key).strip().lower(),
+            "observation_value": dict(observation_value or {}),
+            "summary": str(summary).strip(),
+            "source": str(source).strip() or "caregiver_reported",
+            "observed_at": _ensure_utc(observed_at),
+            "expires_at": _ensure_utc(expires_at),
+            "status": "active",
+            "created_at": datetime.now(UTC),
+        }
+        self.patient_observations[observation_id] = row
+        return dict(row)
+
+    def list_active_patient_observations(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        now_utc = _ensure_utc(now)
+        rows = [
+            dict(observation)
+            for observation in self.patient_observations.values()
+            if str(observation["tenant_id"]) == str(tenant_id)
+            and str(observation["patient_id"]) == str(patient_id)
+            and str(observation.get("status", "active")) == "active"
+            and _ensure_dt(observation["expires_at"]) > now_utc
+        ]
+        rows.sort(key=lambda item: str(item["created_at"]))
+        return rows
 
     def log_mediation_decision(
         self,
@@ -2807,6 +2872,59 @@ class PostgresStore(Store):
             cur.execute(sql, (tenant_id, patient_id, str(fact_key).strip().lower()))
             row = cur.fetchone()
             return _row_dict(cur, row) if row is not None else None
+
+    def create_patient_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict,
+        summary: str,
+        source: str,
+        observed_at: datetime,
+        expires_at: datetime,
+    ) -> dict:
+        sql = """
+        INSERT INTO patient_observations
+        (tenant_id, patient_id, actor_participant_id, observation_key, observation_value, summary, source,
+         observed_at, expires_at, status)
+        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, 'active')
+        RETURNING id, tenant_id, patient_id, actor_participant_id, observation_key, observation_value, summary,
+                  source, observed_at, expires_at, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    actor_participant_id,
+                    str(observation_key).strip().lower(),
+                    json.dumps(observation_value or {}),
+                    str(summary).strip(),
+                    str(source).strip() or "caregiver_reported",
+                    _ensure_utc(observed_at),
+                    _ensure_utc(expires_at),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def list_active_patient_observations(self, *, tenant_id: str, patient_id: str, now: datetime) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, actor_participant_id, observation_key, observation_value, summary,
+               source, observed_at, expires_at, status, created_at
+        FROM patient_observations
+        WHERE tenant_id = %s
+          AND patient_id = %s
+          AND status = 'active'
+          AND expires_at > %s
+        ORDER BY created_at ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (tenant_id, patient_id, _ensure_utc(now)))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
 
     def log_mediation_decision(
         self,

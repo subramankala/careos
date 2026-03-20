@@ -43,6 +43,7 @@ MIGRATIONS=(
   "careos/db/migrations/0007_personalization_and_mediation.sql"
   "careos/db/migrations/0008_person_identity_and_memberships.sql"
   "careos/db/migrations/0009_patient_clinical_facts.sql"
+  "careos/db/migrations/0010_patient_observations.sql"
 )
 
 if [[ -z "${CAREOS_DATABASE_URL:-}" ]]; then

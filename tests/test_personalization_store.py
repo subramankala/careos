@@ -113,3 +113,34 @@ def test_inmemory_patient_clinical_facts_can_be_forgotten() -> None:
     assert forgotten["id"] == inserted["id"]
     assert forgotten["status"] == "forgotten"
     assert active == []
+
+
+def test_inmemory_patient_observations_respect_expiry() -> None:
+    store = InMemoryStore()
+    now = datetime.now(UTC)
+    store.create_patient_observation(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        observation_key="sleep_last_night",
+        observation_value={"hours": 4},
+        summary="slept 4 hours last night",
+        source="caregiver_reported",
+        observed_at=now,
+        expires_at=now + timedelta(hours=30),
+    )
+    store.create_patient_observation(
+        tenant_id="tenant-1",
+        patient_id="patient-1",
+        actor_participant_id="actor-1",
+        observation_key="pain_today",
+        observation_value={"level": "mild"},
+        summary="pain today is mild",
+        source="caregiver_reported",
+        observed_at=now - timedelta(hours=3),
+        expires_at=now - timedelta(minutes=1),
+    )
+
+    active = store.list_active_patient_observations(tenant_id="tenant-1", patient_id="patient-1", now=now)
+    assert len(active) == 1
+    assert active[0]["observation_key"] == "sleep_last_night"

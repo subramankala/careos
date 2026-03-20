@@ -388,6 +388,43 @@ class CareOSAdapter:
             method="DELETE",
         )
 
+    def create_patient_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict[str, Any],
+        summary: str,
+        source: str = "caregiver_reported",
+        observed_at_iso: str | None = None,
+        expires_at_iso: str,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "actor_participant_id": actor_participant_id,
+            "observation_key": observation_key,
+            "observation_value": dict(observation_value or {}),
+            "summary": summary,
+            "source": source,
+            "expires_at": expires_at_iso,
+        }
+        if observed_at_iso:
+            payload["observed_at"] = observed_at_iso
+        return self._request(
+            "/internal/patient-context/observations",
+            method="POST",
+            payload=payload,
+        )
+
+    def list_active_patient_observations(self, *, tenant_id: str, patient_id: str) -> dict[str, Any]:
+        return self._request(
+            f"/internal/patient-context/observations/active?tenant_id={tenant_id}&patient_id={patient_id}",
+            method="GET",
+        )
+
     def log_mediation_decision(
         self,
         *,

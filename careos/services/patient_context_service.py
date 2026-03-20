@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from careos.db.repositories.store import Store
 
 
@@ -57,3 +59,46 @@ class PatientContextService:
             patient_id=patient_id,
             fact_key=normalized_key,
         )
+
+    def add_observation(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        actor_participant_id: str,
+        observation_key: str,
+        observation_value: dict,
+        summary: str,
+        source: str = "caregiver_reported",
+        observed_at: datetime | None = None,
+        expires_at: datetime | None = None,
+    ) -> dict:
+        profile = self.store.get_patient_profile(patient_id)
+        if profile is None:
+            raise ValueError("patient not found")
+        if str(profile.get("tenant_id")) != str(tenant_id):
+            raise ValueError("tenant-patient mismatch")
+        normalized_key = str(observation_key).strip().lower()
+        if not normalized_key:
+            raise ValueError("observation_key is required")
+        if not str(summary).strip():
+            raise ValueError("summary is required")
+        observed_ts = observed_at or datetime.now(UTC)
+        expires_ts = expires_at or observed_ts
+        if expires_ts <= observed_ts:
+            raise ValueError("expires_at must be after observed_at")
+        return self.store.create_patient_observation(
+            tenant_id=tenant_id,
+            patient_id=patient_id,
+            actor_participant_id=actor_participant_id,
+            observation_key=normalized_key,
+            observation_value=dict(observation_value or {}),
+            summary=str(summary).strip(),
+            source=str(source).strip() or "caregiver_reported",
+            observed_at=observed_ts,
+            expires_at=expires_ts,
+        )
+
+    def active_observations(self, *, tenant_id: str, patient_id: str, now: datetime | None = None) -> list[dict]:
+        ts = now or datetime.now(UTC)
+        return self.store.list_active_patient_observations(tenant_id=tenant_id, patient_id=patient_id, now=ts)
