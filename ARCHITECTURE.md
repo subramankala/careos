@@ -1,68 +1,119 @@
 # CareOS Lite Architecture
 
-## Request Flow
+## System Diagram
 
-1. Twilio sends inbound webhook to `POST /twilio/webhook`.
-2. FastAPI validates signature and parses sender (`From`) + message text (`Body`).
-3. Unknown or incomplete senders enter `OnboardingService` state machine (`myself` vs `someone I care for`) with persisted session state.
-   After self-onboarding or caregiver approval, flow continues into a persisted setup wizard menu.
-4. Known senders resolve through `IdentityService` with active patient context rules.
-5. Inbound message is persisted in `message_events` only after patient context is resolved.
-6. `DeterministicRouter` executes command using `WinService`.
-7. Outbound response is persisted in `message_events` with idempotency key.
-8. FastAPI returns TwiML response.
+```mermaid
+flowchart TD
+    TW[Twilio WhatsApp] --> GW[careos-lite-gateway<br/>/gateway/twilio/webhook]
 
-## Scheduler Flow
+    GW --> ID[IdentityService<br/>active patient context]
+    GW --> ONB[OnboardingService<br/>role + setup wizard]
+    GW --> PLAN[Action Planner<br/>structured creates/updates]
+    GW --> DET[Deterministic Intent Layer<br/>schedule/status/done/delay/edit/delete]
+    GW --> DASH[Care-Dash Link Generator]
+    GW --> OCL[OpenClawConversationEngine]
 
-1. `scheduler_worker.py` polls due win instances on cadence.
-2. `PolicyEngine` computes strategy from criticality + flexibility + persona.
-3. Reminder or escalation actions are emitted via `MessageOrchestrator`.
-4. Outbound sends are idempotent (unique idempotency key in `message_events`).
-5. Escalations are persisted in `escalation_events`.
+    OCL --> RESP[OpenClaw Gateway<br/>/v1/responses]
+    OCL --> MCP[MCP Server]
 
-## Escalation Flow
+    MCP --> API
+    GW --> API[careos-lite-api]
+    API --> WIN[WinService]
+    API --> EDIT[CarePlanEditService]
+    API --> PCTX[PatientContextService<br/>durable clinical facts]
+    API --> PERS[PersonalizationService]
 
-1. Win remains unresolved past policy threshold.
-2. Escalation rule determines recipient (caregiver first for pilot).
-3. Escalation event is recorded with reason and level.
-4. Notification message is sent/logged idempotently.
+    WIN --> DB[(Postgres)]
+    EDIT --> DB
+    PCTX --> DB
+    PERS --> DB
+    API --> DB
+    GW --> DB
 
-## Current Risk Controls
+    SCHED[careos-lite-scheduler] --> API
+    SCHED --> DB
+    SCHED --> POL[PolicyEngine]
+    POL --> MSG[MessageOrchestrator]
+    MSG --> TW
 
-- `POST /twilio/webhook` validates Twilio signatures before command handling when enabled.
-- Inbound message dedupe is keyed by `MessageSid` (or a deterministic fallback hash if absent).
-- Outbound replies are idempotent per inbound correlation id.
-- Scheduler reminders are idempotent per `win_instance_id + scheduled_start`.
-- Patient day windows are resolved in patient timezone and converted to UTC for storage/query.
-- Identity resolution returns no context on ambiguous caregiver links instead of guessing a patient.
+    DASH --> TW
+```
 
-## Care Plan Delta Update Model
+## Inbound Conversation Flow
 
-- Edits are versioned (`care_plan_versions`) and auditable (`care_plan_change_events`).
-- Each change captures actor, timestamp, old value, new value, reason, superseded instance ids, and created instance ids.
-- Future-instance regeneration rule:
-  1. Preserve historical completions/skips.
-  2. Preserve active/due unless `supersede_active_due=true`.
-  3. Supersede targeted future instances.
-  4. Insert replacement future instances from confirmed payload.
-- Temporary wins/medications are represented by optional `temporary_start` and `temporary_end` on `win_definitions`.
-- Recurrence model is definition-driven:
-  - `one_off`: only explicit instances are used.
-  - `daily` / `weekly`: future instances are generated from `seed_start`, `seed_duration_minutes`, and recurrence settings.
-  - Generation horizon is rolling (default 30 days) and runs during patient reads and scheduler scans.
+1. Twilio sends inbound WhatsApp messages to `POST /gateway/twilio/webhook`.
+2. The gateway normalizes sender identity, resolves linked participant/patient context, and runs onboarding/setup shortcuts if needed.
+3. The gateway handles high-confidence operational paths first:
+   - schedule/status reads
+   - done/skip/delay
+   - medication edit/delete
+   - caregiver dashboard link requests
+   - explicit durable-fact commands like `remember ...`, `facts`, and `forget ...`
+4. Structured action requests flow through the planner for create/update/complete operations with confirmation.
+5. Non-operational questions fall through to `OpenClawConversationEngine`.
+6. OpenClaw is grounded with:
+   - active medication list
+   - PRN medications
+   - medication-purpose hints
+   - durable clinical facts
+   - MCP tool hints such as `careos_get_clinical_facts`, `careos_get_medications`, `careos_get_today`, and `careos_get_status`
+7. The gateway returns a TwiML message response to Twilio.
 
-## Known Pilot Limitations
+## Durable Clinical Facts
 
-- Caregiver onboarding for another adult now stays in `verification_pending` until patient `APPROVE` reply.
-- Verification relies on patient phone ownership as WhatsApp identity proof; no additional KYC/OTP layer yet.
-- Onboarding sessions expire by TTL and restart from role selection; there is no admin endpoint yet to inspect or override sessions.
-- If upstream proxy/TLS URL configuration is wrong, Twilio signature checks will fail closed until `CAREOS_PUBLIC_WEBHOOK_BASE_URL` is corrected.
-- Scheduler uses idempotent writes for duplicate protection, but does not yet include advisory locking/leader election.
+Durable clinical facts are stored separately from day-scoped personalization rules.
 
-## Deployment Notes (GCP VM)
+- Persistence: `patient_clinical_facts`
+- Service: `PatientContextService`
+- Internal API:
+  - `POST /internal/patient-context/clinical-facts`
+  - `GET /internal/patient-context/clinical-facts/active`
+  - `DELETE /internal/patient-context/clinical-facts`
+- WhatsApp commands:
+  - `remember <key>: <fact>`
+  - `remember <fact>`
+  - `facts`
+  - `forget <key|number>`
 
-- Run FastAPI app and scheduler worker as separate systemd services.
-- Use managed Postgres (or VM Postgres) and daily backups.
-- Keep Twilio auth token in secret manager or restricted env file.
-- Ensure TLS termination on ingress (Nginx/Caddy/Cloud LB).
-- Configure Twilio webhook URL to `/twilio/webhook`.
+These facts are intended for stable patient context such as medical history, procedures, chronic conditions, and other durable facts that should shape later OpenClaw answers.
+
+## Scheduler / Outbound Flow
+
+1. `careos-lite-scheduler` polls due win instances.
+2. `PolicyEngine` determines reminder/escalation behavior using criticality, flexibility, persona, and active personalization rules.
+3. `MessageOrchestrator` emits outbound reminder/escalation messages.
+4. Outbound events are logged idempotently in `message_events`.
+
+## Storage Model
+
+Postgres is the source of truth for:
+
+- identities, memberships, caregiver links, and active patient context
+- care plans, win definitions, win instances, and care-plan deltas
+- onboarding sessions and caregiver verification requests
+- personalization rules and mediation decisions
+- durable clinical facts
+- message events and reminder context
+
+## Runtime Components
+
+- `careos-lite-api`: FastAPI app, internal APIs, care-plan edit APIs, patient/timeline/status APIs
+- `careos-lite-gateway`: Twilio mediation, deterministic command layer, structured planner, OpenClaw-first conversational path
+- `careos-lite-mcp`: authenticated tool surface for OpenClaw/agents
+- `careos-lite-scheduler`: reminder/escalation worker
+- `care-dash`: secure caregiver dashboard linked from gateway responses
+
+## Current Reliability Controls
+
+- inbound dedupe keyed by `MessageSid` or deterministic fallback
+- outbound idempotency for reminders and replies
+- patient-local day windows resolved in patient timezone
+- active-patient context selection for multi-patient caregivers
+- gateway retry on transient OpenClaw `/v1/responses` transport/parse failures
+- deterministic fallback when OpenClaw is unavailable
+
+## Known Gaps
+
+- durable facts currently support explicit capture via WhatsApp commands, not freeform extraction from arbitrary conversational turns
+- durable facts are grounded for OpenClaw responses, but dashboard editing/inspection surfaces are still minimal
+- long-term patient-context types beyond durable facts, such as short-lived observations and today-scoped plans, are still backlog work
