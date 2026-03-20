@@ -138,3 +138,38 @@ def test_patient_context_service_lists_active_day_plans() -> None:
     assert len(active) == 1
     assert active[0]["id"] == inserted["id"]
     assert active[0]["plan_key"] == "doctor_visit"
+
+
+def test_patient_context_service_defaults_day_plan_queries_to_patient_local_date() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="A", type="family", timezone="UTC", status="active"))
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="P",
+            timezone="Asia/Kolkata",
+            primary_language="en",
+            persona_type="caregiver_managed_elder",
+            risk_level="medium",
+            status="active",
+        )
+    )
+
+    context.patient_context.upsert_day_plan(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        actor_participant_id="actor-1",
+        plan_key="travel",
+        plan_value={"statement": "traveling this evening"},
+        summary="traveling this evening",
+        source="caregiver_reported",
+        plan_date=date(2026, 3, 21),
+        expires_at=datetime(2026, 3, 21, 18, 29, 59, tzinfo=UTC),
+    )
+
+    active = context.patient_context.active_day_plans(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        now=datetime(2026, 3, 20, 20, 30, tzinfo=UTC),
+    )
+    assert len(active) == 1
+    assert active[0]["plan_key"] == "travel"

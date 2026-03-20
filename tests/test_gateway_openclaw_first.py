@@ -1445,6 +1445,83 @@ def test_gateway_enriches_planner_context_with_active_patient_context(monkeypatc
         settings.gateway_conversation_mode = previous_mode
 
 
+def test_gateway_context_commands_support_sequential_user_flow(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        remember_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Remember recent_procedure: Coronary stent placement on 2026-02-26",
+                "MessageSid": "SM-gw-seq-1",
+            }
+        )
+        note_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Note slept 4 hours last night",
+                "MessageSid": "SM-gw-seq-2",
+            }
+        )
+        monkeypatch.setattr(
+            twilio_gateway,
+            "_infer_plan_date_and_expiry",
+            lambda summary, timezone_name, now_utc: (
+                date(2026, 3, 21),
+                datetime(2026, 3, 21, 18, 29, 59, tzinfo=UTC),
+                "tomorrow",
+            ),
+        )
+        plan_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Plan doctor visit at 4 pm tomorrow",
+                "MessageSid": "SM-gw-seq-3",
+            }
+        )
+        facts_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "facts",
+                "MessageSid": "SM-gw-seq-4",
+            }
+        )
+        observations_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "observations",
+                "MessageSid": "SM-gw-seq-5",
+            }
+        )
+        plans_response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "plans",
+                "MessageSid": "SM-gw-seq-6",
+            }
+        )
+
+        assert remember_response.status_code == 200
+        assert note_response.status_code == 200
+        assert plan_response.status_code == 200
+        assert b"recent_procedure" in facts_response.body
+        assert b"slept_4_hours_last_night" in observations_response.body
+        assert b"doctor_visit_at_4_pm" in plans_response.body
+        assert len(adapter.clinical_facts) == 1
+        assert len(adapter.observations) == 1
+        assert len(adapter.day_plans) == 1
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
 def test_gateway_forget_command_removes_fact_by_key(monkeypatch) -> None:
     previous_mode = settings.gateway_conversation_mode
     settings.gateway_conversation_mode = "deterministic_first"
