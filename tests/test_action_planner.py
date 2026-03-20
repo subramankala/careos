@@ -1,4 +1,8 @@
+from datetime import UTC, datetime
+
+from careos.gateway import action_planner
 from careos.gateway.action_planner import plan_action_request
+from careos.gateway.action_proposals import StructuredActionProposal
 
 
 class _PlannerAdapter:
@@ -111,3 +115,44 @@ def test_planner_returns_clarify_for_ambiguous_target() -> None:
     assert "8:30 am" in plan.confirmation_text.lower()
     assert "12:30 pm" in plan.confirmation_text.lower()
     assert "reply with the time or item number" in plan.confirmation_text.lower()
+
+
+def test_planner_passes_patient_context_into_proposal_generation(monkeypatch) -> None:
+    captured: dict = {}
+
+    def _fake_propose(text: str, context: dict, timeline: list[dict] | None = None):  # noqa: ANN001
+        captured["text"] = text
+        captured["context"] = dict(context)
+        captured["timeline"] = list(timeline or [])
+        return StructuredActionProposal(
+            action_type="create_task",
+            entity_type="routine",
+            category="routine",
+            title="Extra hydration",
+            instructions="Drink water in the afternoon.",
+            patient_id="patient-1",
+            tenant_id="tenant-1",
+            actor_id="participant-1",
+            start_at=datetime(2026, 3, 14, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 14, 10, 0, tzinfo=UTC),
+            criticality="low",
+            flexibility="flexible",
+            confirmation_text="ok",
+        )
+
+    monkeypatch.setattr(action_planner, "propose_structured_action", _fake_propose)
+
+    context = _context()
+    context["patient_context"] = {
+        "clinical_facts": [{"fact_key": "recent_procedure", "summary": "Recent stent placement"}],
+        "recent_observations": [{"observation_key": "sleep", "summary": "Slept 4 hours last night"}],
+        "day_plans": [{"plan_key": "doctor_visit", "summary": "Doctor visit at 4 PM today"}],
+    }
+    timeline = []
+
+    plan = plan_action_request("Plan extra hydration today", context, timeline, _PlannerAdapter())
+
+    assert plan is not None
+    assert captured["context"]["patient_context"]["clinical_facts"][0]["fact_key"] == "recent_procedure"
+    assert captured["context"]["patient_context"]["recent_observations"][0]["observation_key"] == "sleep"
+    assert captured["context"]["patient_context"]["day_plans"][0]["plan_key"] == "doctor_visit"

@@ -361,6 +361,41 @@ def _handle_list_day_plans(context: dict) -> str | None:
     return "\n".join(lines)
 
 
+def _planner_patient_context(context: dict) -> dict[str, list[dict]]:
+    empty = {
+        "clinical_facts": [],
+        "recent_observations": [],
+        "day_plans": [],
+    }
+    try:
+        facts = adapter.list_active_patient_clinical_facts(
+            tenant_id=str(context["tenant_id"]),
+            patient_id=str(context["patient_id"]),
+        )
+        observations = adapter.list_active_patient_observations(
+            tenant_id=str(context["tenant_id"]),
+            patient_id=str(context["patient_id"]),
+        )
+        plans = adapter.list_active_patient_day_plans(
+            tenant_id=str(context["tenant_id"]),
+            patient_id=str(context["patient_id"]),
+        )
+    except Exception:
+        logger.warning("planner_patient_context_unavailable", extra={"patient_id": str(context.get("patient_id", ""))})
+        return empty
+    return {
+        "clinical_facts": list(facts.get("facts", [])),
+        "recent_observations": list(observations.get("observations", [])),
+        "day_plans": list(plans.get("plans", [])),
+    }
+
+
+def _planner_context(context: dict) -> dict:
+    planner_context = dict(context)
+    planner_context["patient_context"] = _planner_patient_context(context)
+    return planner_context
+
+
 def _handle_forget_plan_command(text: str, context: dict) -> str | None:
     match = re.fullmatch(r"\s*forget\s+plan\s+(.+?)\s*", text, flags=re.IGNORECASE)
     if match is None:
@@ -1241,7 +1276,7 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         result = app_context.router.handle(text, _to_participant_context(context))
         return Response(content=message_response(result.text), media_type="text/xml")
 
-    compiled_plan = plan_action_request(text, context, today.get("timeline", []), adapter)
+    compiled_plan = plan_action_request(text, _planner_context(context), today.get("timeline", []), adapter)
     if compiled_plan is not None and compiled_plan.execution_strategy == "clarify_target":
         return Response(content=message_response(compiled_plan.confirmation_text), media_type="text/xml")
     if compiled_plan is not None:

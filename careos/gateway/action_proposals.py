@@ -116,6 +116,76 @@ def _resolve_timeline_match(text: str, timeline: list[dict]) -> dict | None:
     return best[1] if best is not None else None
 
 
+def _normalized_patient_context(context: dict) -> dict[str, list[dict[str, object]]]:
+    raw = context.get("patient_context")
+    if not isinstance(raw, dict):
+        return {
+            "clinical_facts": [],
+            "recent_observations": [],
+            "day_plans": [],
+        }
+
+    normalized: dict[str, list[dict[str, object]]] = {
+        "clinical_facts": [],
+        "recent_observations": [],
+        "day_plans": [],
+    }
+    for row in raw.get("clinical_facts", []) or []:
+        if not isinstance(row, dict):
+            continue
+        normalized["clinical_facts"].append(
+            {
+                "fact_key": str(row.get("fact_key", "")).strip(),
+                "summary": str(row.get("summary", "")).strip(),
+                "source": str(row.get("source", "")).strip(),
+                "effective_at": str(row.get("effective_at", "")).strip(),
+            }
+        )
+    for row in raw.get("recent_observations", []) or []:
+        if not isinstance(row, dict):
+            continue
+        normalized["recent_observations"].append(
+            {
+                "observation_key": str(row.get("observation_key", "")).strip(),
+                "summary": str(row.get("summary", "")).strip(),
+                "source": str(row.get("source", "")).strip(),
+                "observed_at": str(row.get("observed_at", "")).strip(),
+                "expires_at": str(row.get("expires_at", "")).strip(),
+            }
+        )
+    for row in raw.get("day_plans", []) or []:
+        if not isinstance(row, dict):
+            continue
+        normalized["day_plans"].append(
+            {
+                "plan_key": str(row.get("plan_key", "")).strip(),
+                "summary": str(row.get("summary", "")).strip(),
+                "source": str(row.get("source", "")).strip(),
+                "plan_date": str(row.get("plan_date", "")).strip(),
+                "expires_at": str(row.get("expires_at", "")).strip(),
+            }
+        )
+    return normalized
+
+
+def _timeline_preview(timeline: list[dict]) -> list[dict[str, object]]:
+    preview: list[dict[str, object]] = []
+    for item in timeline[:12]:
+        if not isinstance(item, dict):
+            continue
+        preview.append(
+            {
+                "win_instance_id": str(item.get("win_instance_id", "")).strip(),
+                "title": str(item.get("title", "")).strip(),
+                "category": str(item.get("category", "")).strip(),
+                "scheduled_start": str(item.get("scheduled_start", "")).strip(),
+                "scheduled_end": str(item.get("scheduled_end", "")).strip(),
+                "current_state": str(item.get("current_state", "")).strip(),
+            }
+        )
+    return preview
+
+
 def _fallback_walk_task(text: str, context: dict) -> StructuredActionProposal | None:
     lower = text.strip().lower()
     if "walk" not in lower or not _likely_create_request(lower):
@@ -300,18 +370,25 @@ def _fallback_medication_reminder_task(text: str, context: dict) -> StructuredAc
     )
 
 
-def _llm_task_proposal(text: str, context: dict) -> StructuredActionProposal | None:
+def _llm_task_proposal(text: str, context: dict, timeline: list[dict] | None = None) -> StructuredActionProposal | None:
     if not settings.openai_api_key or not _likely_create_request(text):
         return None
+    timeline_rows = timeline or []
     payload = {
         "text": text,
         "patient_timezone": str(context["patient_timezone"]),
+        "patient_context": _normalized_patient_context(context),
+        "timeline_preview": _timeline_preview(timeline_rows),
         "allowed_actions": ["create_task", "none"],
         "allowed_entity_types": ["routine", "diagnostic_test", "appointment", "medication_reminder"],
         "now_utc": datetime.now(UTC).isoformat(),
     }
     system = (
         "You convert natural language into a proposed structured action. "
+        "Use patient_context as patient-specific grounding when it is relevant. "
+        "Clinical facts are durable history, recent observations are near-term state, and day plans are same-day practical constraints. "
+        "If the request depends on that context, reflect it in the title, instructions, timing, and confirmation-safe interpretation. "
+        "Use timeline_preview only as current schedule context, not as durable history. "
         "Return JSON only with keys: action, entity_type, category, title, instructions, start_offset_hours, "
         "end_offset_hours, criticality, flexibility, confidence. "
         "Use action=create_task only for clear requests to create a task/reminder. Otherwise use action=none."
@@ -489,7 +566,7 @@ def propose_structured_action(text: str, context: dict, timeline: list[dict] | N
         proposal = resolver(text, context)
         if proposal is not None:
             return proposal
-    return _llm_task_proposal(text, context)
+    return _llm_task_proposal(text, context, timeline_rows)
 
 
 def is_confirmation(text: str) -> bool:

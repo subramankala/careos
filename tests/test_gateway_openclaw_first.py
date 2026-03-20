@@ -1380,6 +1380,71 @@ def test_gateway_forget_plan_command_removes_plan_by_number(monkeypatch) -> None
         settings.gateway_conversation_mode = previous_mode
 
 
+def test_gateway_enriches_planner_context_with_active_patient_context(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    adapter = _AdapterBase()
+    adapter.clinical_facts = [
+        {
+            "fact_key": "recent_procedure",
+            "summary": "Recent stent placement",
+            "source": "caregiver_reported",
+            "effective_at": "2026-02-26T00:00:00+00:00",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+        }
+    ]
+    adapter.observations = [
+        {
+            "observation_key": "sleep",
+            "summary": "Slept 4 hours last night",
+            "source": "caregiver_reported",
+            "observed_at": "2026-03-13T00:00:00+00:00",
+            "expires_at": "2026-03-14T06:00:00+00:00",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+        }
+    ]
+    adapter.day_plans = [
+        {
+            "plan_key": "doctor_visit",
+            "summary": "Doctor visit at 4 PM today",
+            "source": "caregiver_reported",
+            "plan_date": "2026-03-12",
+            "expires_at": "2026-03-12T18:29:59+00:00",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+        }
+    ]
+    captured: dict = {}
+
+    def _fake_plan_action_request(text: str, context: dict, timeline: list[dict], adapter_obj):  # noqa: ANN001
+        captured["text"] = text
+        captured["context"] = dict(context)
+        captured["timeline"] = list(timeline)
+        return None
+
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        monkeypatch.setattr(twilio_gateway, "openclaw_delegate", _OpenClawUnavailable())
+        monkeypatch.setattr(twilio_gateway, "plan_action_request", _fake_plan_action_request)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "How should I arrange tomorrow?",
+                "MessageSid": "SM-gw-plan-context-1",
+            }
+        )
+        assert response.status_code == 200
+        patient_context = captured["context"]["patient_context"]
+        assert patient_context["clinical_facts"][0]["fact_key"] == "recent_procedure"
+        assert patient_context["recent_observations"][0]["observation_key"] == "sleep"
+        assert patient_context["day_plans"][0]["plan_key"] == "doctor_visit"
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
 def test_gateway_forget_command_removes_fact_by_key(monkeypatch) -> None:
     previous_mode = settings.gateway_conversation_mode
     settings.gateway_conversation_mode = "deterministic_first"
