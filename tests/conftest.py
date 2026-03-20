@@ -20,5 +20,6 @@ def reset_in_memory_store() -> None:
     context.onboarding.store = store
     context.personalization.store = store
     context.patient_context.store = store
+    context.care_team.store = store
     yield
     settings.use_in_memory = previous_use_in_memory

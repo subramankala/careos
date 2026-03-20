@@ -89,6 +89,28 @@ class CaregiverNotificationPreferencesUpdateRequest(BaseModel):
     notification_preferences: dict = Field(default_factory=dict)
 
 
+class CareTeamMembershipCreateRequest(BaseModel):
+    tenant_id: str
+    patient_id: str
+    participant_id: str
+    membership_type: str
+    relationship: str = "family"
+    display_label: str = ""
+    authority_policy: dict = Field(default_factory=dict)
+    notification_policy: dict = Field(default_factory=dict)
+    source: str = "manual"
+
+
+class CareTeamMembershipUpdateRequest(BaseModel):
+    membership_id: str
+    membership_type: str | None = None
+    relationship: str | None = None
+    display_label: str | None = None
+    authority_policy: dict | None = None
+    notification_policy: dict | None = None
+    source: str | None = None
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -205,6 +227,26 @@ def _derive_task_criticality(patient_id: str) -> list[dict]:
     ]
 
 
+def _serialize_care_team_membership(row: dict) -> dict:
+    return {
+        "membership_id": str(row.get("id", "")),
+        "tenant_id": str(row.get("tenant_id", "")),
+        "patient_id": str(row.get("patient_id", "")),
+        "participant_id": str(row.get("participant_id", "")),
+        "display_name": str(row.get("display_name", "")),
+        "phone_number": str(row.get("phone_number", "")),
+        "participant_role": str(row.get("participant_role", "")),
+        "membership_type": str(row.get("membership_type", "")),
+        "relationship": str(row.get("relationship", "")),
+        "display_label": str(row.get("display_label", "")),
+        "authority_policy": dict(row.get("authority_policy", {})),
+        "notification_policy": dict(row.get("notification_policy", {})),
+        "source": str(row.get("source", "manual")),
+        "status": str(row.get("status", "active")),
+        "active": bool(row.get("active", True)),
+    }
+
+
 @router.get("/internal/resolve-context")
 def resolve_context(phone_number: str = Query(...)) -> dict:
     participant = context.identity_service.resolve_by_phone(phone_number)
@@ -303,6 +345,71 @@ def update_caregiver_link_notification_preferences(payload: CaregiverNotificatio
         "notification_preferences": dict(updated.get("notification_preferences", {})),
         "authorization_version": int(updated.get("authorization_version", 1) or 1),
         "can_edit_plan": bool(updated.get("can_edit_plan", False)),
+    }
+
+
+@router.post("/internal/care-team/memberships")
+def create_care_team_membership(payload: CareTeamMembershipCreateRequest) -> dict:
+    try:
+        row = context.care_team.create_membership(
+            tenant_id=payload.tenant_id,
+            patient_id=payload.patient_id,
+            participant_id=payload.participant_id,
+            membership_type=payload.membership_type,
+            relationship=payload.relationship,
+            display_label=payload.display_label,
+            authority_policy=payload.authority_policy,
+            notification_policy=payload.notification_policy,
+            source=payload.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_care_team_membership(row)
+
+
+@router.get("/internal/care-team/memberships")
+def list_care_team_memberships(patient_id: str = Query(...)) -> dict:
+    return {
+        "patient_id": patient_id,
+        "team": [
+            _serialize_care_team_membership(row)
+            for row in context.care_team.list_team_for_patient(patient_id=patient_id)
+        ],
+    }
+
+
+@router.post("/internal/care-team/memberships/update")
+def update_care_team_membership(payload: CareTeamMembershipUpdateRequest) -> dict:
+    row = context.care_team.update_membership(
+        payload.membership_id,
+        membership_type=payload.membership_type,
+        relationship=payload.relationship,
+        display_label=payload.display_label,
+        authority_policy=payload.authority_policy,
+        notification_policy=payload.notification_policy,
+        source=payload.source,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="care team membership not found")
+    return _serialize_care_team_membership(row)
+
+
+@router.delete("/internal/care-team/memberships")
+def deactivate_care_team_membership(membership_id: str = Query(...)) -> dict:
+    row = context.care_team.deactivate_membership(membership_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="care team membership not found")
+    return _serialize_care_team_membership(row)
+
+
+@router.post("/internal/care-team/sync-from-caregiver-links")
+def sync_care_team_from_caregiver_links(patient_id: str = Query(...)) -> dict:
+    return {
+        "patient_id": patient_id,
+        "team": [
+            _serialize_care_team_membership(row)
+            for row in context.care_team.sync_team_from_caregiver_links(patient_id=patient_id)
+        ],
     }
 
 

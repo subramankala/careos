@@ -2,6 +2,7 @@ from careos.conversation.deterministic_router import DeterministicRouter
 from careos.conversation.openclaw_engine import OpenClawConversationEngine
 from careos.db.repositories.store import InMemoryStore, PostgresStore, Store
 from careos.services.care_plan_edit_service import CarePlanEditService
+from careos.services.care_team_service import CareTeamService
 from careos.services.identity_service import IdentityService
 from careos.services.messaging_service import MessageOrchestrator
 from careos.services.onboarding_service import OnboardingService
@@ -29,6 +30,7 @@ class AppContext:
         self.onboarding = OnboardingService(self.store)
         self.personalization = PersonalizationService(self.store)
         self.patient_context = PatientContextService(self.store)
+        self.care_team = CareTeamService(self.store)
         self.router = DeterministicRouter(self.win_service)
         self.openclaw_router = OpenClawConversationEngine(
             base_url=settings.openclaw_base_url,

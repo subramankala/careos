@@ -95,6 +95,26 @@ def caregiver_link_metadata(link: dict) -> dict:
     }
 
 
+def membership_type_from_link(link: dict) -> str:
+    preset = str(link.get("preset") or "").strip().lower()
+    relationship = str(link.get("relationship") or "").strip().lower()
+    if preset == "observer" or relationship == "observer":
+        return "observer"
+    return "family_caregiver"
+
+
+def normalized_care_team_membership(row: dict) -> dict:
+    authority = dict(row.get("authority_policy") or {})
+    notifications = dict(row.get("notification_policy") or {})
+    return {
+        **dict(row),
+        "authority_policy": authority,
+        "notification_policy": notifications,
+        "source": str(row.get("source", "manual") or "manual"),
+        "status": str(row.get("status", "active") or "active"),
+    }
+
+
 @dataclass
 class CarePlanPatch:
     status: str | None = None
@@ -178,6 +198,56 @@ class Store(ABC):
 
     @abstractmethod
     def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_care_team_membership(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        membership_type: str,
+        relationship: str,
+        display_label: str,
+        authority_policy: dict,
+        notification_policy: dict,
+        source: str = "manual",
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_care_team_membership(self, membership_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_care_team_memberships_for_patient(self, patient_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_care_team_memberships_for_participant(self, participant_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_care_team_membership(
+        self,
+        membership_id: str,
+        *,
+        membership_type: str | None = None,
+        relationship: str | None = None,
+        display_label: str | None = None,
+        authority_policy: dict | None = None,
+        notification_policy: dict | None = None,
+        source: str | None = None,
+    ) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def deactivate_care_team_membership(self, membership_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_care_team_membership_from_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -496,6 +566,7 @@ class InMemoryStore(Store):
         self.patient_clinical_facts: dict[str, dict] = {}
         self.patient_observations: dict[str, dict] = {}
         self.patient_day_plans: dict[str, dict] = {}
+        self.care_team_memberships: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
 
@@ -732,6 +803,175 @@ class InMemoryStore(Store):
             rows.append(row)
         rows.sort(key=lambda item: (str(item.get("preset", "")) != "primary_caregiver", str(item.get("display_name", ""))))
         return rows
+
+    def create_care_team_membership(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        membership_type: str,
+        relationship: str,
+        display_label: str,
+        authority_policy: dict,
+        notification_policy: dict,
+        source: str = "manual",
+    ) -> dict:
+        for existing in self.care_team_memberships.values():
+            if (
+                str(existing.get("patient_id")) == str(patient_id)
+                and str(existing.get("participant_id")) == str(participant_id)
+            ):
+                existing["tenant_id"] = str(tenant_id)
+                existing["membership_type"] = str(membership_type)
+                existing["relationship"] = str(relationship)
+                existing["display_label"] = str(display_label)
+                existing["authority_policy"] = dict(authority_policy or {})
+                existing["notification_policy"] = dict(notification_policy or {})
+                existing["source"] = str(source or "manual")
+                existing["status"] = "active"
+                existing["updated_at"] = datetime.now(UTC)
+                return normalized_care_team_membership(dict(existing))
+        membership_id = str(uuid4())
+        now = datetime.now(UTC)
+        row = {
+            "id": membership_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "participant_id": str(participant_id),
+            "membership_type": str(membership_type),
+            "relationship": str(relationship),
+            "display_label": str(display_label),
+            "authority_policy": dict(authority_policy or {}),
+            "notification_policy": dict(notification_policy or {}),
+            "source": str(source or "manual"),
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.care_team_memberships[membership_id] = row
+        return normalized_care_team_membership(dict(row))
+
+    def get_care_team_membership(self, membership_id: str) -> dict | None:
+        row = self.care_team_memberships.get(str(membership_id))
+        if row is None:
+            return None
+        participant = self.participants.get(str(row.get("participant_id")), {})
+        data = normalized_care_team_membership(dict(row))
+        data["display_name"] = str(participant.get("display_name", ""))
+        data["phone_number"] = str(participant.get("phone_number", ""))
+        data["participant_role"] = str(participant.get("role", ""))
+        data["active"] = bool(participant.get("active", True))
+        return data
+
+    def list_care_team_memberships_for_patient(self, patient_id: str) -> list[dict]:
+        rows: list[dict] = []
+        for row in self.care_team_memberships.values():
+            if str(row.get("patient_id")) != str(patient_id) or str(row.get("status", "active")) != "active":
+                continue
+            data = self.get_care_team_membership(str(row["id"]))
+            if data is not None:
+                rows.append(data)
+        rows.sort(key=lambda item: (str(item.get("membership_type", "")) == "observer", str(item.get("display_name", ""))))
+        return rows
+
+    def list_care_team_memberships_for_participant(self, participant_id: str) -> list[dict]:
+        rows: list[dict] = []
+        for row in self.care_team_memberships.values():
+            if str(row.get("participant_id")) != str(participant_id) or str(row.get("status", "active")) != "active":
+                continue
+            data = self.get_care_team_membership(str(row["id"]))
+            if data is not None:
+                rows.append(data)
+        rows.sort(key=lambda item: (str(item.get("patient_id", "")), str(item.get("display_name", ""))))
+        return rows
+
+    def update_care_team_membership(
+        self,
+        membership_id: str,
+        *,
+        membership_type: str | None = None,
+        relationship: str | None = None,
+        display_label: str | None = None,
+        authority_policy: dict | None = None,
+        notification_policy: dict | None = None,
+        source: str | None = None,
+    ) -> dict | None:
+        row = self.care_team_memberships.get(str(membership_id))
+        if row is None or str(row.get("status", "active")) != "active":
+            return None
+        if membership_type is not None:
+            row["membership_type"] = str(membership_type)
+        if relationship is not None:
+            row["relationship"] = str(relationship)
+        if display_label is not None:
+            row["display_label"] = str(display_label)
+        if authority_policy is not None:
+            row["authority_policy"] = dict(authority_policy or {})
+        if notification_policy is not None:
+            row["notification_policy"] = dict(notification_policy or {})
+        if source is not None:
+            row["source"] = str(source or "manual")
+        row["updated_at"] = datetime.now(UTC)
+        return self.get_care_team_membership(str(membership_id))
+
+    def deactivate_care_team_membership(self, membership_id: str) -> dict | None:
+        row = self.care_team_memberships.get(str(membership_id))
+        if row is None or str(row.get("status", "active")) != "active":
+            return None
+        row["status"] = "inactive"
+        row["updated_at"] = datetime.now(UTC)
+        return self.get_care_team_membership(str(membership_id))
+
+    def upsert_care_team_membership_from_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        link = self.get_caregiver_link(caregiver_participant_id, patient_id)
+        if link is None:
+            return None
+        patient = self.get_patient_profile(patient_id)
+        if patient is None:
+            return None
+        participant = self.get_participant_record(caregiver_participant_id) or {}
+        authority_policy = {
+            "can_view_dashboard": "view_dashboard" in list(link.get("scopes", [])),
+            "can_edit_plan": bool(link.get("can_edit_plan", False)),
+            "can_manage_team": False,
+        }
+        notification_policy = {
+            "preset": str(link.get("preset", "primary_caregiver")),
+            "notification_preferences": dict(link.get("notification_preferences", {})),
+        }
+        existing = next(
+            (
+                row for row in self.care_team_memberships.values()
+                if str(row.get("patient_id")) == str(patient_id)
+                and str(row.get("participant_id")) == str(caregiver_participant_id)
+            ),
+            None,
+        )
+        display_label = str(participant.get("display_name", "")).strip()
+        if existing is None:
+            return self.create_care_team_membership(
+                tenant_id=str(patient["tenant_id"]),
+                patient_id=patient_id,
+                participant_id=caregiver_participant_id,
+                membership_type=membership_type_from_link(link),
+                relationship=str(link.get("relationship", "family")),
+                display_label=display_label,
+                authority_policy=authority_policy,
+                notification_policy=notification_policy,
+                source="caregiver_link_sync",
+            )
+        if str(existing.get("source", "manual")) != "caregiver_link_sync":
+            return self.get_care_team_membership(str(existing["id"]))
+        return self.update_care_team_membership(
+            str(existing["id"]),
+            membership_type=membership_type_from_link(link),
+            relationship=str(link.get("relationship", "family")),
+            display_label=display_label,
+            authority_policy=authority_policy,
+            notification_policy=notification_policy,
+            source="caregiver_link_sync",
+        )
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         cid = str(uuid4())
@@ -2022,6 +2262,268 @@ class PostgresStore(Store):
                 rows.append(data)
         rows.sort(key=lambda item: (str(item.get("preset", "")) != "primary_caregiver", str(item.get("display_name", ""))))
         return rows
+
+    def create_care_team_membership(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        membership_type: str,
+        relationship: str,
+        display_label: str,
+        authority_policy: dict,
+        notification_policy: dict,
+        source: str = "manual",
+    ) -> dict:
+        sql = """
+        INSERT INTO care_team_memberships (
+            tenant_id, patient_id, participant_id, membership_type, relationship,
+            display_label, authority_policy, notification_policy, source, status
+        )
+        VALUES (
+            %(tenant_id)s, %(patient_id)s, %(participant_id)s, %(membership_type)s, %(relationship)s,
+            %(display_label)s, %(authority_policy)s::jsonb, %(notification_policy)s::jsonb, %(source)s, 'active'
+        )
+        ON CONFLICT (patient_id, participant_id)
+        DO UPDATE SET
+            tenant_id = EXCLUDED.tenant_id,
+            membership_type = EXCLUDED.membership_type,
+            relationship = EXCLUDED.relationship,
+            display_label = EXCLUDED.display_label,
+            authority_policy = EXCLUDED.authority_policy,
+            notification_policy = EXCLUDED.notification_policy,
+            source = EXCLUDED.source,
+            status = 'active',
+            updated_at = now()
+        RETURNING id, tenant_id, patient_id, participant_id, membership_type, relationship, display_label,
+                  authority_policy, notification_policy, source, status, created_at, updated_at
+        """
+        params = {
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "participant_id": participant_id,
+            "membership_type": membership_type,
+            "relationship": relationship,
+            "display_label": display_label,
+            "authority_policy": json.dumps(dict(authority_policy or {})),
+            "notification_policy": json.dumps(dict(notification_policy or {})),
+            "source": source,
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return normalized_care_team_membership(_row_dict(cur, cur.fetchone()))
+
+    def get_care_team_membership(self, membership_id: str) -> dict | None:
+        sql = """
+        SELECT ctm.id,
+               ctm.tenant_id,
+               ctm.patient_id,
+               ctm.participant_id,
+               ctm.membership_type,
+               ctm.relationship,
+               ctm.display_label,
+               ctm.authority_policy,
+               ctm.notification_policy,
+               ctm.source,
+               ctm.status,
+               ctm.created_at,
+               ctm.updated_at,
+               p.display_name,
+               p.phone_number,
+               p.role AS participant_role,
+               p.active
+        FROM care_team_memberships ctm
+        JOIN participants p ON p.id = ctm.participant_id
+        WHERE ctm.id = %s
+        LIMIT 1
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (membership_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return normalized_care_team_membership(_row_dict(cur, row))
+
+    def list_care_team_memberships_for_patient(self, patient_id: str) -> list[dict]:
+        sql = """
+        SELECT ctm.id,
+               ctm.tenant_id,
+               ctm.patient_id,
+               ctm.participant_id,
+               ctm.membership_type,
+               ctm.relationship,
+               ctm.display_label,
+               ctm.authority_policy,
+               ctm.notification_policy,
+               ctm.source,
+               ctm.status,
+               ctm.created_at,
+               ctm.updated_at,
+               p.display_name,
+               p.phone_number,
+               p.role AS participant_role,
+               p.active
+        FROM care_team_memberships ctm
+        JOIN participants p ON p.id = ctm.participant_id
+        WHERE ctm.patient_id = %s
+          AND ctm.status = 'active'
+        ORDER BY p.display_name ASC, p.phone_number ASC
+        """
+        rows: list[dict] = []
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (patient_id,))
+            for row in cur.fetchall():
+                rows.append(normalized_care_team_membership(_row_dict(cur, row)))
+        rows.sort(key=lambda item: (str(item.get("membership_type", "")) == "observer", str(item.get("display_name", ""))))
+        return rows
+
+    def list_care_team_memberships_for_participant(self, participant_id: str) -> list[dict]:
+        sql = """
+        SELECT ctm.id,
+               ctm.tenant_id,
+               ctm.patient_id,
+               ctm.participant_id,
+               ctm.membership_type,
+               ctm.relationship,
+               ctm.display_label,
+               ctm.authority_policy,
+               ctm.notification_policy,
+               ctm.source,
+               ctm.status,
+               ctm.created_at,
+               ctm.updated_at,
+               p.display_name,
+               p.phone_number,
+               p.role AS participant_role,
+               p.active
+        FROM care_team_memberships ctm
+        JOIN participants p ON p.id = ctm.participant_id
+        WHERE ctm.participant_id = %s
+          AND ctm.status = 'active'
+        ORDER BY ctm.patient_id ASC, p.display_name ASC
+        """
+        rows: list[dict] = []
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (participant_id,))
+            for row in cur.fetchall():
+                rows.append(normalized_care_team_membership(_row_dict(cur, row)))
+        return rows
+
+    def update_care_team_membership(
+        self,
+        membership_id: str,
+        *,
+        membership_type: str | None = None,
+        relationship: str | None = None,
+        display_label: str | None = None,
+        authority_policy: dict | None = None,
+        notification_policy: dict | None = None,
+        source: str | None = None,
+    ) -> dict | None:
+        current = self.get_care_team_membership(membership_id)
+        if current is None or str(current.get("status", "active")) != "active":
+            return None
+        sql = """
+        UPDATE care_team_memberships
+        SET membership_type = %(membership_type)s,
+            relationship = %(relationship)s,
+            display_label = %(display_label)s,
+            authority_policy = %(authority_policy)s::jsonb,
+            notification_policy = %(notification_policy)s::jsonb,
+            source = %(source)s,
+            updated_at = now()
+        WHERE id = %(membership_id)s
+        RETURNING id
+        """
+        params = {
+            "membership_id": membership_id,
+            "membership_type": membership_type if membership_type is not None else str(current.get("membership_type", "")),
+            "relationship": relationship if relationship is not None else str(current.get("relationship", "")),
+            "display_label": display_label if display_label is not None else str(current.get("display_label", "")),
+            "authority_policy": json.dumps(
+                dict(authority_policy if authority_policy is not None else current.get("authority_policy", {}))
+            ),
+            "notification_policy": json.dumps(
+                dict(notification_policy if notification_policy is not None else current.get("notification_policy", {}))
+            ),
+            "source": source if source is not None else str(current.get("source", "manual")),
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            if row is None:
+                return None
+        return self.get_care_team_membership(membership_id)
+
+    def deactivate_care_team_membership(self, membership_id: str) -> dict | None:
+        current = self.get_care_team_membership(membership_id)
+        if current is None or str(current.get("status", "active")) != "active":
+            return None
+        sql = """
+        UPDATE care_team_memberships
+        SET status = 'inactive',
+            updated_at = now()
+        WHERE id = %s
+        RETURNING id
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (membership_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+        result = dict(current)
+        result["status"] = "inactive"
+        return normalized_care_team_membership(result)
+
+    def upsert_care_team_membership_from_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        link = self.get_caregiver_link(caregiver_participant_id, patient_id)
+        if link is None:
+            return None
+        patient = self.get_patient_profile(patient_id)
+        participant = self.get_participant_record(caregiver_participant_id)
+        if patient is None or participant is None:
+            return None
+        authority_policy = {
+            "can_view_dashboard": "view_dashboard" in list(link.get("scopes", [])),
+            "can_edit_plan": bool(link.get("can_edit_plan", False)),
+            "can_manage_team": False,
+        }
+        notification_policy = {
+            "preset": str(link.get("preset", "primary_caregiver")),
+            "notification_preferences": dict(link.get("notification_preferences", {})),
+        }
+        existing = next(
+            (
+                row for row in self.list_care_team_memberships_for_patient(patient_id)
+                if str(row.get("participant_id")) == str(caregiver_participant_id)
+            ),
+            None,
+        )
+        display_label = str(participant.get("display_name", "")).strip()
+        if existing is None:
+            return self.create_care_team_membership(
+                tenant_id=str(patient.get("tenant_id", "")),
+                patient_id=patient_id,
+                participant_id=caregiver_participant_id,
+                membership_type=membership_type_from_link(link),
+                relationship=str(link.get("relationship", "family")),
+                display_label=display_label,
+                authority_policy=authority_policy,
+                notification_policy=notification_policy,
+                source="caregiver_link_sync",
+            )
+        if str(existing.get("source", "manual")) != "caregiver_link_sync":
+            return existing
+        return self.update_care_team_membership(
+            str(existing.get("membership_id") or existing.get("id")),
+            membership_type=membership_type_from_link(link),
+            relationship=str(link.get("relationship", "family")),
+            display_label=display_label,
+            authority_policy=authority_policy,
+            notification_policy=notification_policy,
+            source="caregiver_link_sync",
+        )
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         sql = """
