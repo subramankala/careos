@@ -6,6 +6,7 @@ from careos.domain.enums.core import Role
 from careos.domain.models.api import CommandResult, LinkedPatientSummary, ParticipantContext, ParticipantIdentity
 from careos.gateway.careos_adapter import DashboardLinkError, TaskEditError
 from careos.gateway.routes import twilio_gateway
+from careos.services.care_team_service import CareTeamService
 from careos.settings import settings
 
 
@@ -430,9 +431,18 @@ class _FakeOnboardingService:
 
 class _FakeStore:
     def __init__(self) -> None:
+        self.patient_profiles = {
+            "patient-1": {
+                "patient_id": "patient-1",
+                "tenant_id": "tenant-1",
+                "timezone": "Asia/Kolkata",
+                "display_name": "Patient One",
+            }
+        }
         self.participants = {
             "participant-1": {
                 "id": "participant-1",
+                "tenant_id": "tenant-1",
                 "display_name": "Primary Caregiver",
                 "phone_number": "whatsapp:+15550001111",
                 "role": "caregiver",
@@ -440,6 +450,7 @@ class _FakeStore:
             },
             "participant-2": {
                 "id": "participant-2",
+                "tenant_id": "tenant-1",
                 "display_name": "Observer Caregiver",
                 "phone_number": "whatsapp:+15550002222",
                 "role": "caregiver",
@@ -470,6 +481,43 @@ class _FakeStore:
                 "can_edit_plan": False,
             },
         }
+        self.care_team_memberships = [
+            {
+                "id": "team-1",
+                "tenant_id": "tenant-1",
+                "patient_id": "patient-1",
+                "participant_id": "participant-1",
+                "display_name": "Primary Caregiver",
+                "phone_number": "whatsapp:+15550001111",
+                "participant_role": "caregiver",
+                "membership_type": "family_caregiver",
+                "relationship": "family",
+                "display_label": "Primary family caregiver",
+                "authority_policy": {"can_view_dashboard": True, "can_edit_plan": True, "can_manage_team": False},
+                "notification_policy": {"preset": "primary_caregiver", "notification_preferences": {"due_reminders": True}},
+                "source": "caregiver_link_sync",
+                "status": "active",
+                "active": True,
+            },
+            {
+                "id": "team-2",
+                "tenant_id": "tenant-1",
+                "patient_id": "patient-1",
+                "participant_id": "participant-2",
+                "display_name": "Observer Caregiver",
+                "phone_number": "whatsapp:+15550002222",
+                "participant_role": "caregiver",
+                "membership_type": "observer",
+                "relationship": "observer",
+                "display_label": "Observer",
+                "authority_policy": {"can_view_dashboard": True, "can_edit_plan": False, "can_manage_team": False},
+                "notification_policy": {"preset": "observer", "notification_preferences": {"due_reminders": False}},
+                "source": "caregiver_link_sync",
+                "status": "active",
+                "active": True,
+            },
+        ]
+        self.care_responsibility_assignments: list[dict] = []
 
     def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
         return [dict(link) for (participant_id, linked_patient_id), link in self.links.items() if linked_patient_id == patient_id]
@@ -497,6 +545,79 @@ class _FakeStore:
         link["notification_preferences"] = {"due_reminders": preset != "observer"}
         self.links[(caregiver_participant_id, patient_id)] = link
         return dict(link)
+
+    def get_patient_profile(self, patient_id: str) -> dict | None:
+        row = self.patient_profiles.get(patient_id)
+        return dict(row) if row is not None else None
+
+    def get_participant_record(self, participant_id: str) -> dict | None:
+        row = self.participants.get(participant_id)
+        return dict(row) if row is not None else None
+
+    def get_care_team_membership(self, membership_id: str) -> dict | None:
+        for row in self.care_team_memberships:
+            if row["id"] == membership_id:
+                return dict(row)
+        return None
+
+    def list_care_team_memberships_for_patient(self, patient_id: str) -> list[dict]:
+        return [dict(row) for row in self.care_team_memberships if row["patient_id"] == patient_id and row["status"] == "active"]
+
+    def list_care_team_memberships_for_participant(self, participant_id: str) -> list[dict]:
+        return [dict(row) for row in self.care_team_memberships if row["participant_id"] == participant_id and row["status"] == "active"]
+
+    def create_care_responsibility_assignment(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        team_member_id: str,
+        assignment_type: str,
+        responsibility_role: str,
+        target_category: str | None = None,
+    ) -> dict:
+        normalized_category = str(target_category or "").strip().lower()
+        for row in self.care_responsibility_assignments:
+            if (
+                row["patient_id"] == patient_id
+                and row["team_member_id"] == team_member_id
+                and row["assignment_type"] == assignment_type
+                and row["target_category"] == normalized_category
+                and row["status"] == "active"
+            ):
+                row["responsibility_role"] = responsibility_role
+                return dict(row)
+        assignment = {
+            "id": f"assign-{len(self.care_responsibility_assignments)+1}",
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "team_member_id": team_member_id,
+            "assignment_type": assignment_type,
+            "responsibility_role": responsibility_role,
+            "target_category": normalized_category,
+            "status": "active",
+        }
+        self.care_responsibility_assignments.append(assignment)
+        return dict(assignment)
+
+    def list_care_responsibility_assignments_for_patient(self, patient_id: str) -> list[dict]:
+        rows = []
+        for row in self.care_responsibility_assignments:
+            if row["patient_id"] != patient_id or row["status"] != "active":
+                continue
+            member = next((item for item in self.care_team_memberships if item["id"] == row["team_member_id"]), {})
+            rows.append({**row, "team_member_name": member.get("display_name", ""), "membership_type": member.get("membership_type", "")})
+        return rows
+
+    def list_care_responsibility_assignments_for_team_member(self, team_member_id: str) -> list[dict]:
+        return [dict(row) for row in self.care_responsibility_assignments if row["team_member_id"] == team_member_id and row["status"] == "active"]
+
+    def deactivate_care_responsibility_assignment(self, assignment_id: str) -> dict | None:
+        for row in self.care_responsibility_assignments:
+            if row["id"] == assignment_id and row["status"] == "active":
+                row["status"] = "inactive"
+                return dict(row)
+        return None
 
 
 class _FakeLegacyRouter:
@@ -551,6 +672,7 @@ class _FakeAppContext:
         self.onboarding = _FakeOnboardingService()
         self.router = _FakeLegacyRouter()
         self.store = _FakeStore()
+        self.care_team = CareTeamService(self.store)
 
 
 twilio_gateway.app_context = _FakeAppContext()
@@ -2576,4 +2698,94 @@ def test_gateway_openclaw_first_short_circuits_clear_schedule_read(monkeypatch) 
         assert b"Wrong path" not in response.body
     finally:
         settings.openai_api_key = previous_key
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_team_command_lists_members_and_assignments(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.store.care_responsibility_assignments = [
+        {
+            "id": "assign-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "team_member_id": "team-1",
+            "assignment_type": "category",
+            "responsibility_role": "responsible",
+            "target_category": "medications",
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "team",
+                "MessageSid": "SM-gw-team-1",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Care team:" in response.body
+        assert b"Primary Caregiver" in response.body
+        assert b"medications (responsible)" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_assign_category_command_updates_team_assignment(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    try:
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "assign medications to 1 as responsible",
+                "MessageSid": "SM-gw-team-2",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Assigned medications to Primary Caregiver as responsible." in response.body
+        assert fake_context.store.care_responsibility_assignments[0]["target_category"] == "medications"
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_who_handles_command_reports_assignment(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.store.care_responsibility_assignments = [
+        {
+            "id": "assign-1",
+            "tenant_id": "tenant-1",
+            "patient_id": "patient-1",
+            "team_member_id": "team-1",
+            "assignment_type": "category",
+            "responsibility_role": "responsible",
+            "target_category": "medications",
+            "status": "active",
+        }
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "who handles medications",
+                "MessageSid": "SM-gw-team-3",
+            }
+        )
+        assert response.status_code == 200
+        assert b"For medications: Primary Caregiver (responsible)" in response.body
+    finally:
         settings.gateway_conversation_mode = previous_mode

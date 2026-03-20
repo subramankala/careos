@@ -526,6 +526,94 @@ def _list_caregivers_reply(patient_id: str) -> str:
     return "\n".join(lines)
 
 
+def _category_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+def _category_label(value: str) -> str:
+    return str(value).replace("_", " ").strip() or "uncategorized"
+
+
+def _list_care_team_reply(patient_id: str) -> str:
+    team = app_context.care_team.team_summary(patient_id=patient_id)
+    if not team:
+        return "No care team members are configured yet."
+    lines = ["Care team:"]
+    for index, member in enumerate(team, start=1):
+        name = str(member.get("display_name", member.get("participant_id", "")))
+        membership_type = str(member.get("membership_type", "")).replace("_", " ")
+        assignments = list(member.get("assignments", []))
+        if assignments:
+            summary = ", ".join(
+                f"{_category_label(str(item.get('target_category', '')))} ({str(item.get('responsibility_role', '')).replace('_', ' ')})"
+                for item in assignments
+            )
+        else:
+            summary = "no category assignments"
+        lines.append(f"{index}. {name} - {membership_type}; {summary}")
+    lines.append("Reply: assign <category> to <number> as responsible|informed")
+    return "\n".join(lines)
+
+
+def _parse_care_team_assignment_command(text: str) -> tuple[str, int, str] | None:
+    match = re.fullmatch(
+        r"\s*assign\s+(.+?)\s+to\s+(\d+)(?:\s+as\s+(responsible|informed))?\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    category = _category_key(match.group(1))
+    if not category:
+        return None
+    return category, int(match.group(2)), str(match.group(3) or "responsible").lower()
+
+
+def _assign_care_team_reply(*, actor_id: str, patient_id: str, category: str, member_index: int, role: str) -> str:
+    actor_link = app_context.store.get_caregiver_link(actor_id, patient_id)
+    if actor_link is None or not bool(actor_link.get("can_edit_plan", False)):
+        return "Only a primary caregiver can manage care team assignments."
+    team = app_context.care_team.list_team_for_patient(patient_id=patient_id)
+    if member_index < 1 or member_index > len(team):
+        return "I could not find that team member number. Reply 'team' to see the list."
+    member = team[member_index - 1]
+    try:
+        assignment = app_context.care_team.assign_category(
+            tenant_id=str(member.get("tenant_id", "")),
+            patient_id=patient_id,
+            team_member_id=str(member.get("membership_id") or member.get("id")),
+            category=category,
+            responsibility_role=role,
+        )
+    except ValueError as exc:
+        return str(exc)
+    name = str(member.get("display_name", member.get("participant_id", "")))
+    return (
+        f"Assigned {_category_label(str(assignment.get('target_category', category)))} to {name} "
+        f"as {str(assignment.get('responsibility_role', role)).replace('_', ' ')}."
+    )
+
+
+def _parse_who_handles_command(text: str) -> str | None:
+    match = re.fullmatch(r"\s*who\s+handles\s+(.+?)\??\s*", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    category = _category_key(match.group(1))
+    return category or None
+
+
+def _who_handles_reply(patient_id: str, category: str) -> str:
+    assignments = app_context.care_team.category_assignments_for_patient(patient_id=patient_id)
+    relevant = [row for row in assignments if str(row.get("target_category", "")) == str(category)]
+    if not relevant:
+        return f"No one is assigned for {_category_label(category)} yet."
+    labels = [
+        f"{str(row.get('team_member_name', 'team member'))} ({str(row.get('responsibility_role', '')).replace('_', ' ')})"
+        for row in relevant
+    ]
+    return f"For {_category_label(category)}: " + ", ".join(labels)
+
+
 def _normalize_phone(value: str) -> str:
     normalized = value.strip().lower()
     if normalized.startswith("whatsapp:"):
@@ -1238,6 +1326,8 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         )
     if normalized in {"caregivers", "list caregivers"}:
         return Response(content=message_response(_list_caregivers_reply(str(context["patient_id"]))), media_type="text/xml")
+    if normalized in {"team", "care team"}:
+        return Response(content=message_response(_list_care_team_reply(str(context["patient_id"]))), media_type="text/xml")
     if preset_command is not None:
         phone_number, preset = preset_command
         reply = _update_caregiver_preset_reply(
@@ -1246,6 +1336,21 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             phone_number=phone_number,
             preset=preset,
         )
+        return Response(content=message_response(reply), media_type="text/xml")
+    team_assignment = _parse_care_team_assignment_command(text)
+    if team_assignment is not None:
+        category, member_index, role = team_assignment
+        reply = _assign_care_team_reply(
+            actor_id=str(context["participant_id"]),
+            patient_id=str(context["patient_id"]),
+            category=category,
+            member_index=member_index,
+            role=role,
+        )
+        return Response(content=message_response(reply), media_type="text/xml")
+    who_handles = _parse_who_handles_command(text)
+    if who_handles is not None:
+        reply = _who_handles_reply(str(context["patient_id"]), who_handles)
         return Response(content=message_response(reply), media_type="text/xml")
     if normalized in {"facts", "clinical facts", "remembered facts"}:
         reply = _handle_list_clinical_facts(context)

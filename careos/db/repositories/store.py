@@ -115,6 +115,16 @@ def normalized_care_team_membership(row: dict) -> dict:
     }
 
 
+def normalized_responsibility_assignment(row: dict) -> dict:
+    return {
+        **dict(row),
+        "assignment_type": str(row.get("assignment_type", "")),
+        "responsibility_role": str(row.get("responsibility_role", "")),
+        "target_category": str(row.get("target_category", "")),
+        "status": str(row.get("status", "active") or "active"),
+    }
+
+
 @dataclass
 class CarePlanPatch:
     status: str | None = None
@@ -248,6 +258,31 @@ class Store(ABC):
 
     @abstractmethod
     def upsert_care_team_membership_from_caregiver_link(self, caregiver_participant_id: str, patient_id: str) -> dict | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_care_responsibility_assignment(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        team_member_id: str,
+        assignment_type: str,
+        responsibility_role: str,
+        target_category: str | None = None,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_care_responsibility_assignments_for_patient(self, patient_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_care_responsibility_assignments_for_team_member(self, team_member_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def deactivate_care_responsibility_assignment(self, assignment_id: str) -> dict | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -567,6 +602,7 @@ class InMemoryStore(Store):
         self.patient_observations: dict[str, dict] = {}
         self.patient_day_plans: dict[str, dict] = {}
         self.care_team_memberships: dict[str, dict] = {}
+        self.care_responsibility_assignments: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
 
@@ -972,6 +1008,76 @@ class InMemoryStore(Store):
             notification_policy=notification_policy,
             source="caregiver_link_sync",
         )
+
+    def create_care_responsibility_assignment(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        team_member_id: str,
+        assignment_type: str,
+        responsibility_role: str,
+        target_category: str | None = None,
+    ) -> dict:
+        normalized_category = str(target_category or "").strip().lower()
+        for existing in self.care_responsibility_assignments.values():
+            if (
+                str(existing.get("patient_id")) == str(patient_id)
+                and str(existing.get("team_member_id")) == str(team_member_id)
+                and str(existing.get("assignment_type")) == str(assignment_type)
+                and str(existing.get("target_category", "")).strip().lower() == normalized_category
+            ):
+                existing["responsibility_role"] = str(responsibility_role)
+                existing["status"] = "active"
+                existing["updated_at"] = datetime.now(UTC)
+                return normalized_responsibility_assignment(dict(existing))
+        assignment_id = str(uuid4())
+        now = datetime.now(UTC)
+        row = {
+            "id": assignment_id,
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "team_member_id": str(team_member_id),
+            "assignment_type": str(assignment_type),
+            "responsibility_role": str(responsibility_role),
+            "target_category": normalized_category,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.care_responsibility_assignments[assignment_id] = row
+        return normalized_responsibility_assignment(dict(row))
+
+    def list_care_responsibility_assignments_for_patient(self, patient_id: str) -> list[dict]:
+        rows: list[dict] = []
+        for row in self.care_responsibility_assignments.values():
+            if str(row.get("patient_id")) != str(patient_id) or str(row.get("status", "active")) != "active":
+                continue
+            team_member = self.get_care_team_membership(str(row.get("team_member_id")))
+            data = normalized_responsibility_assignment(dict(row))
+            if team_member is not None:
+                data["team_member_name"] = str(team_member.get("display_name", ""))
+                data["membership_type"] = str(team_member.get("membership_type", ""))
+            rows.append(data)
+        rows.sort(key=lambda item: (str(item.get("target_category", "")), str(item.get("team_member_name", ""))))
+        return rows
+
+    def list_care_responsibility_assignments_for_team_member(self, team_member_id: str) -> list[dict]:
+        rows = [
+            normalized_responsibility_assignment(dict(row))
+            for row in self.care_responsibility_assignments.values()
+            if str(row.get("team_member_id")) == str(team_member_id) and str(row.get("status", "active")) == "active"
+        ]
+        rows.sort(key=lambda item: (str(item.get("target_category", "")), str(item.get("responsibility_role", ""))))
+        return rows
+
+    def deactivate_care_responsibility_assignment(self, assignment_id: str) -> dict | None:
+        row = self.care_responsibility_assignments.get(str(assignment_id))
+        if row is None or str(row.get("status", "active")) != "active":
+            return None
+        row["status"] = "inactive"
+        row["updated_at"] = datetime.now(UTC)
+        return normalized_responsibility_assignment(dict(row))
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         cid = str(uuid4())
@@ -2524,6 +2630,124 @@ class PostgresStore(Store):
             notification_policy=notification_policy,
             source="caregiver_link_sync",
         )
+
+    def create_care_responsibility_assignment(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        team_member_id: str,
+        assignment_type: str,
+        responsibility_role: str,
+        target_category: str | None = None,
+    ) -> dict:
+        find_sql = """
+        SELECT id
+        FROM care_responsibility_assignments
+        WHERE patient_id = %(patient_id)s
+          AND team_member_id = %(team_member_id)s
+          AND assignment_type = %(assignment_type)s
+          AND coalesce(target_category, '') = coalesce(%(target_category)s, '')
+          AND status = 'active'
+        LIMIT 1
+        """
+        insert_sql = """
+        INSERT INTO care_responsibility_assignments (
+            tenant_id, patient_id, team_member_id, assignment_type, responsibility_role, target_category, status
+        )
+        VALUES (
+            %(tenant_id)s, %(patient_id)s, %(team_member_id)s, %(assignment_type)s, %(responsibility_role)s,
+            %(target_category)s, 'active'
+        )
+        RETURNING id, tenant_id, patient_id, team_member_id, assignment_type, responsibility_role, target_category,
+                  status, created_at, updated_at
+        """
+        update_sql = """
+        UPDATE care_responsibility_assignments
+        SET responsibility_role = %(responsibility_role)s,
+            updated_at = now()
+        WHERE id = %(assignment_id)s
+        RETURNING id, tenant_id, patient_id, team_member_id, assignment_type, responsibility_role, target_category,
+                  status, created_at, updated_at
+        """
+        params = {
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "team_member_id": team_member_id,
+            "assignment_type": assignment_type,
+            "responsibility_role": responsibility_role,
+            "target_category": str(target_category or "").strip().lower() or None,
+        }
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(find_sql, params)
+            existing = cur.fetchone()
+            if existing is not None:
+                params["assignment_id"] = str(existing[0])
+                cur.execute(update_sql, params)
+                return normalized_responsibility_assignment(_row_dict(cur, cur.fetchone()))
+            cur.execute(insert_sql, params)
+            return normalized_responsibility_assignment(_row_dict(cur, cur.fetchone()))
+
+    def list_care_responsibility_assignments_for_patient(self, patient_id: str) -> list[dict]:
+        sql = """
+        SELECT cra.id,
+               cra.tenant_id,
+               cra.patient_id,
+               cra.team_member_id,
+               cra.assignment_type,
+               cra.responsibility_role,
+               cra.target_category,
+               cra.status,
+               cra.created_at,
+               cra.updated_at,
+               p.display_name AS team_member_name,
+               ctm.membership_type
+        FROM care_responsibility_assignments cra
+        JOIN care_team_memberships ctm ON ctm.id = cra.team_member_id
+        JOIN participants p ON p.id = ctm.participant_id
+        WHERE cra.patient_id = %s
+          AND cra.status = 'active'
+        ORDER BY cra.target_category ASC, p.display_name ASC
+        """
+        rows: list[dict] = []
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (patient_id,))
+            for row in cur.fetchall():
+                rows.append(normalized_responsibility_assignment(_row_dict(cur, row)))
+        return rows
+
+    def list_care_responsibility_assignments_for_team_member(self, team_member_id: str) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, team_member_id, assignment_type, responsibility_role, target_category,
+               status, created_at, updated_at
+        FROM care_responsibility_assignments
+        WHERE team_member_id = %s
+          AND status = 'active'
+        ORDER BY target_category ASC, responsibility_role ASC
+        """
+        rows: list[dict] = []
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (team_member_id,))
+            for row in cur.fetchall():
+                rows.append(normalized_responsibility_assignment(_row_dict(cur, row)))
+        return rows
+
+    def deactivate_care_responsibility_assignment(self, assignment_id: str) -> dict | None:
+        sql = """
+        UPDATE care_responsibility_assignments
+        SET status = 'inactive',
+            updated_at = now()
+        WHERE id = %s
+          AND status = 'active'
+        RETURNING id, tenant_id, patient_id, team_member_id, assignment_type, responsibility_role, target_category,
+                  status, created_at, updated_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (assignment_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return normalized_responsibility_assignment(_row_dict(cur, row))
 
     def create_care_plan(self, payload: CarePlanCreate) -> dict:
         sql = """

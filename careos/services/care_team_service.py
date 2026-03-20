@@ -83,6 +83,55 @@ class CareTeamService:
                 memberships.append(row)
         return memberships
 
+    def assign_category(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        team_member_id: str,
+        category: str,
+        responsibility_role: str = "responsible",
+    ) -> dict:
+        membership = self.store.get_care_team_membership(team_member_id)
+        if membership is None:
+            raise ValueError("care team membership not found")
+        if str(membership.get("tenant_id")) != str(tenant_id) or str(membership.get("patient_id")) != str(patient_id):
+            raise ValueError("team membership does not belong to patient")
+        normalized_role = self._normalize_responsibility_role(responsibility_role)
+        normalized_category = self._normalize_category(category)
+        return self.store.create_care_responsibility_assignment(
+            tenant_id=tenant_id,
+            patient_id=patient_id,
+            team_member_id=team_member_id,
+            assignment_type="category",
+            responsibility_role=normalized_role,
+            target_category=normalized_category,
+        )
+
+    def category_assignments_for_patient(self, *, patient_id: str) -> list[dict]:
+        rows = self.store.list_care_responsibility_assignments_for_patient(patient_id)
+        return [row for row in rows if str(row.get("assignment_type")) == "category"]
+
+    def remove_assignment(self, assignment_id: str) -> dict | None:
+        return self.store.deactivate_care_responsibility_assignment(assignment_id)
+
+    def team_summary(self, *, patient_id: str) -> list[dict]:
+        memberships = self.list_team_for_patient(patient_id=patient_id)
+        assignments = self.category_assignments_for_patient(patient_id=patient_id)
+        assignments_by_member: dict[str, list[dict]] = {}
+        for row in assignments:
+            assignments_by_member.setdefault(str(row.get("team_member_id", "")), []).append(row)
+        summary: list[dict] = []
+        for row in memberships:
+            member_id = str(row.get("membership_id") or row.get("id"))
+            summary.append(
+                {
+                    **dict(row),
+                    "assignments": list(assignments_by_member.get(member_id, [])),
+                }
+            )
+        return summary
+
     def _validate_membership_scope(self, *, tenant_id: str, patient_id: str, participant_id: str) -> None:
         patient = self.store.get_patient_profile(patient_id)
         if patient is None:
@@ -118,3 +167,17 @@ class CareTeamService:
             "preset": str(raw.get("preset", "primary_caregiver") or "primary_caregiver"),
             "notification_preferences": dict(raw.get("notification_preferences") or {}),
         }
+
+    @staticmethod
+    def _normalize_category(value: str | None) -> str:
+        normalized = str(value or "").strip().lower().replace(" ", "_")
+        if not normalized:
+            raise ValueError("category is required")
+        return normalized
+
+    @staticmethod
+    def _normalize_responsibility_role(value: str | None) -> str:
+        normalized = str(value or "").strip().lower().replace(" ", "_")
+        if normalized not in {"responsible", "informed"}:
+            raise ValueError("responsibility_role must be responsible or informed")
+        return normalized

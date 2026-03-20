@@ -171,3 +171,64 @@ def test_internal_care_team_sync_from_caregiver_links(monkeypatch) -> None:
 def test_care_team_service_is_wired_into_app_context_fixture() -> None:
     assert isinstance(context.store, InMemoryStore)
     assert context.care_team.store is context.store
+
+
+def test_care_team_service_assigns_category_and_builds_summary() -> None:
+    store, patient_id, primary_id, _observer_id = _seed_store()
+    service = CareTeamService(store)
+    patient = store.get_patient_profile(patient_id)
+    assert patient is not None
+    membership = service.create_membership(
+        tenant_id=str(patient["tenant_id"]),
+        patient_id=patient_id,
+        participant_id=primary_id,
+        membership_type="family_caregiver",
+    )
+
+    assignment = service.assign_category(
+        tenant_id=str(patient["tenant_id"]),
+        patient_id=patient_id,
+        team_member_id=str(membership["id"]),
+        category="medications",
+        responsibility_role="responsible",
+    )
+    assert assignment["target_category"] == "medications"
+
+    summary = service.team_summary(patient_id=patient_id)
+    assert len(summary) == 1
+    assert summary[0]["assignments"][0]["target_category"] == "medications"
+
+
+def test_internal_care_team_assignment_routes(monkeypatch) -> None:
+    store, patient_id, primary_id, _observer_id = _seed_store()
+    patient = store.get_patient_profile(patient_id)
+    assert patient is not None
+    service = CareTeamService(store)
+    monkeypatch.setattr(internal, "context", SimpleNamespace(store=store, care_team=service))
+    membership = service.create_membership(
+        tenant_id=str(patient["tenant_id"]),
+        patient_id=patient_id,
+        participant_id=primary_id,
+        membership_type="family_caregiver",
+    )
+
+    created = internal.create_care_responsibility_assignment(
+        internal.CareResponsibilityAssignmentCreateRequest(
+            tenant_id=str(patient["tenant_id"]),
+            patient_id=patient_id,
+            team_member_id=str(membership["id"]),
+            category="medications",
+            responsibility_role="responsible",
+        )
+    )
+    assert created["target_category"] == "medications"
+
+    listing = internal.list_care_responsibility_assignments(patient_id=patient_id)
+    assert len(listing["assignments"]) == 1
+    assignment_id = listing["assignments"][0]["assignment_id"]
+
+    summary = internal.care_team_summary(patient_id=patient_id)
+    assert summary["team"][0]["assignments"][0]["target_category"] == "medications"
+
+    removed = internal.deactivate_care_responsibility_assignment(assignment_id=assignment_id)
+    assert removed["status"] == "inactive"

@@ -111,6 +111,14 @@ class CareTeamMembershipUpdateRequest(BaseModel):
     source: str | None = None
 
 
+class CareResponsibilityAssignmentCreateRequest(BaseModel):
+    tenant_id: str
+    patient_id: str
+    team_member_id: str
+    category: str
+    responsibility_role: str = "responsible"
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -244,6 +252,21 @@ def _serialize_care_team_membership(row: dict) -> dict:
         "source": str(row.get("source", "manual")),
         "status": str(row.get("status", "active")),
         "active": bool(row.get("active", True)),
+    }
+
+
+def _serialize_care_responsibility_assignment(row: dict) -> dict:
+    return {
+        "assignment_id": str(row.get("id", "")),
+        "tenant_id": str(row.get("tenant_id", "")),
+        "patient_id": str(row.get("patient_id", "")),
+        "team_member_id": str(row.get("team_member_id", "")),
+        "team_member_name": str(row.get("team_member_name", "")),
+        "membership_type": str(row.get("membership_type", "")),
+        "assignment_type": str(row.get("assignment_type", "")),
+        "responsibility_role": str(row.get("responsibility_role", "")),
+        "target_category": str(row.get("target_category", "")),
+        "status": str(row.get("status", "active")),
     }
 
 
@@ -409,6 +432,57 @@ def sync_care_team_from_caregiver_links(patient_id: str = Query(...)) -> dict:
         "team": [
             _serialize_care_team_membership(row)
             for row in context.care_team.sync_team_from_caregiver_links(patient_id=patient_id)
+        ],
+    }
+
+
+@router.post("/internal/care-team/assignments")
+def create_care_responsibility_assignment(payload: CareResponsibilityAssignmentCreateRequest) -> dict:
+    try:
+        row = context.care_team.assign_category(
+            tenant_id=payload.tenant_id,
+            patient_id=payload.patient_id,
+            team_member_id=payload.team_member_id,
+            category=payload.category,
+            responsibility_role=payload.responsibility_role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_care_responsibility_assignment(row)
+
+
+@router.get("/internal/care-team/assignments")
+def list_care_responsibility_assignments(patient_id: str = Query(...)) -> dict:
+    return {
+        "patient_id": patient_id,
+        "assignments": [
+            _serialize_care_responsibility_assignment(row)
+            for row in context.care_team.category_assignments_for_patient(patient_id=patient_id)
+        ],
+    }
+
+
+@router.delete("/internal/care-team/assignments")
+def deactivate_care_responsibility_assignment(assignment_id: str = Query(...)) -> dict:
+    row = context.care_team.remove_assignment(assignment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="care responsibility assignment not found")
+    return _serialize_care_responsibility_assignment(row)
+
+
+@router.get("/internal/care-team/summary")
+def care_team_summary(patient_id: str = Query(...)) -> dict:
+    return {
+        "patient_id": patient_id,
+        "team": [
+            {
+                **_serialize_care_team_membership(row),
+                "assignments": [
+                    _serialize_care_responsibility_assignment(item)
+                    for item in row.get("assignments", [])
+                ],
+            }
+            for row in context.care_team.team_summary(patient_id=patient_id)
         ],
     }
 
