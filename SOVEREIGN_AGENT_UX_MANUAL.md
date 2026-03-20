@@ -1,4 +1,4 @@
-# CareOS Sovereign Agent User Experience Manual
+# CareOS Personal Agent Experience Manual
 
 Last updated: 2026-03-20 UTC
 
@@ -9,151 +9,350 @@ Related architecture:
 
 ## Purpose
 
-This document describes the intended user experience once sovereign-agent support is implemented in CareOS.
+This document defines the intended user experience model for CareOS once personal-agent support is available.
 
-It is not a technical implementation guide. It is a future-state manual for:
+It is not a technical implementation guide. It is a product and UX reference for:
 
-- product thinking
+- product strategy and scope decisions
 - user journey design
-- support and onboarding documentation
-- validating whether the architecture produces the desired experience
+- onboarding and support documentation
+- validating whether the architecture produces the intended experience
+- aligning engineering, design, clinical, and operations teams on what the user experience must guarantee
 
-## Core User Experience Principle
+## Product Thesis
 
-CareOS should provide a personalized care experience for everyone.
+Every CareOS user should receive a personalized care experience.
 
-There are two primary ways that personalization can happen:
+What changes is not whether personalization exists, but where it is mediated:
 
-1. Through a personal sovereign agent
-- the sovereign agent is the user’s preferred interaction and personalization surface
+- directly in native CareOS
+- through a connected personal agent
 
-2. Through native CareOS plus OpenClaw
-- for users without a sovereign agent
-- for users who prefer native CareOS for a given role
-- for fallback when the sovereign agent is unavailable or policy requires a native surface
+CareOS always remains the system of record for:
 
-The difference is not whether personalization exists.
-The difference is where the personalization layer lives.
+- care state
+- workflow state
+- policy enforcement
+- escalation rules
+- responsibility and assignment state
+- auditability of clinically relevant actions
+
+A connected personal agent may personalize how care is delivered, but it does not replace CareOS as the source of care truth.
+
+## Core Experience Principle
+
+CareOS should support a personalized care experience for every user, whether or not they use a personal agent.
+
+There are two primary personalization paths:
+
+### 1. Personal-agent-mediated personalization
+
+The personal agent is the user’s preferred interaction surface and personalization layer.
+
+### 2. Native CareOS personalization
+
+CareOS, supported by OpenClaw, provides personalization directly for users who:
+
+- do not have a connected personal agent
+- prefer native CareOS for a given role or context
+- need fallback because the personal agent is unavailable
+- are in a workflow where policy requires a native CareOS surface
+
+The native path must be a complete and trustworthy care experience, not a degraded backup.
+
+## Non-Negotiable UX Guarantees
+
+A good CareOS experience must guarantee the following:
+
+1. CareOS remains the source of care truth.
+   Regardless of which surface the user interacts through, care status, assignments, escalation state, and clinically relevant outcomes remain grounded in CareOS.
+
+2. Users always know who they are acting as and for.
+   The current role and active patient context must always be clear.
+
+3. Fallback never feels random.
+   If CareOS changes surfaces because a personal agent is unavailable or disallowed for a workflow, the user should understand why.
+
+4. Native CareOS remains first-class.
+   Users without a personal agent must still receive a strong, personalized, context-aware care experience.
+
+5. Urgent care rules remain consistent across surfaces.
+   Personalization may change communication style and timing within policy limits, but not the underlying enforcement of urgent clinical rules.
+
+6. Actions with clinical impact are attributable and auditable.
+   The system must be able to explain what happened, through which surface, for which person, in which role, and with what resulting care state.
+
+7. Mixed-role use should feel natural, not fragmented.
+   The same person may prefer different surfaces for different roles or patient contexts without feeling like they are switching between unrelated products.
+
+## System Responsibility Model
+
+To avoid confusion, CareOS and connected personal agents must have clearly separated responsibilities.
+
+### CareOS always owns
+
+- care plan state
+- care schedule and task state
+- policy enforcement
+- escalation policy and execution
+- assignment and responsibility model
+- patient and role context resolution
+- clinically meaningful status updates
+- audit trail and support visibility
+
+### A connected personal agent may own or mediate
+
+- phrasing and communication style
+- convenience-oriented planning help
+- prioritization support within policy limits
+- timing optimization for flexible actions
+- bundling care tasks with broader personal context
+- user-specific explanation and coaching
+
+### Native CareOS owns when the personal agent is absent, unavailable, or disallowed
+
+- direct interaction with the user
+- direct care-context capture
+- fallback communication
+- task completion confirmation and updates
+- clear explanation of why fallback occurred
 
 ## Surface Model
 
-CareOS should support multiple user-facing surfaces:
+CareOS may support multiple user-facing surfaces over time, including:
 
-- sovereign agent
+- connected personal agent
 - Twilio WhatsApp
-- later voice
-- later iMessage
-- later direct dashboard interactions
+- voice later
+- iMessage later
+- direct dashboard interactions later
 
-For a given user interaction, CareOS should resolve the preferred surface using:
+For any interaction, CareOS should resolve the appropriate surface based on:
 
 - the person
 - the acting role
-- the patient context
+- the active patient context
+- the preferred surface for that tuple
+- the fallback surface for that tuple
+- the policy permissions for that workflow
 
-This means the same human can have different experiences in different roles.
+This means the same human may have different preferred experiences in different contexts.
 
-## What Changes For Users
+## Actor and Context Model
 
-### Before sovereign-agent support
+The same person may interact with CareOS in multiple ways.
 
-The user primarily interacts through native CareOS channels such as WhatsApp.
-Personalization is based on:
+### Person
+
+The human being interacting with the system.
+
+### Role
+
+The role the person is currently acting in, such as:
+
+- patient
+- caregiver
+
+### Patient context
+
+The patient whose care state is currently active.
+
+### Surface preference
+
+The preferred interaction surface for a given person plus role plus patient context.
+
+### Fallback surface
+
+The backup interaction surface if the preferred one is unavailable or disallowed.
+
+This model allows one person to have different interaction preferences across different roles and patient contexts.
+
+## What Changes for Users
+
+### Before personal-agent support
+
+Users primarily interact through native CareOS channels such as WhatsApp. Personalization is based on context managed inside CareOS, including:
 
 - care schedule
-- care context manually entered into CareOS
-- durable facts
+- care-specific durable facts
 - observations
 - day plans
+- care-team ownership context
 - OpenClaw grounding inside CareOS
 
-### After sovereign-agent support
+### After personal-agent support
 
-The user may interact in one of two broad ways:
+Users may experience CareOS in one of two broad modes.
 
-1. Sovereign-agent-first
-- CareOS sends care tasks, events, and policy envelope to the sovereign agent
-- the sovereign agent personalizes how it engages the user
-- CareOS remains the care workflow and policy engine
+#### Personal-agent-first
 
-2. Native-CareOS-first
-- the user continues to use WhatsApp or another native surface
-- CareOS plus OpenClaw provides personalization directly
+CareOS sends care events, tasks, and policy-bounded instructions to the user’s connected personal agent. The personal agent personalizes how the interaction happens. CareOS remains responsible for care workflow, policy, and escalation.
 
-This model should feel continuous to the user, not like two disconnected products.
+#### Native-CareOS-first
 
-## User Types
+The user continues to interact directly through native CareOS surfaces such as WhatsApp. CareOS plus OpenClaw provides personalization directly using care-specific context.
 
-The intended experience is different for different user types.
+These two modes should feel like alternate interaction paths for one coherent product, not two disconnected products.
 
-### Patient
+## What Personalization Looks Like
 
-The patient is the person receiving the care plan and scheduled care tasks.
+### With a connected personal agent
 
-### Caregiver
+Personalization may incorporate broader life context such as:
 
-The caregiver is acting on behalf of a patient and may:
+- calendar busyness
+- recent workload
+- transport or travel constraints
+- caregiver load and stress
+- financial friction
+- broader personal memory and preferences
 
-- check schedule
-- mark tasks done
-- adjust tasks
-- manage care team responsibilities
-- provide care context
+### Without a connected personal agent
 
-### Mixed-role user
+Personalization may still incorporate strong care-relevant context such as:
 
-The same human may:
+- care plan
+- medications
+- durable care facts
+- observations
+- day plans
+- care-team responsibilities
+- user-entered notes and updates
 
-- use a sovereign agent for their own self-care as a patient
-- use native CareOS for someone else as a caregiver
+The experience should still feel thoughtful, relevant, and supportive, even if the context available is narrower.
 
-This is a key scenario and the system should support it naturally.
+## Permission, Consent, and Trust Model
 
-## Persona 1: Patient With A Sovereign Agent
+A connected personal agent increases personalization power, but must not blur the user’s understanding of responsibility or boundaries.
+
+The experience should make the following clear:
+
+- what CareOS is sharing with the connected personal agent
+- what the personal agent may send back to CareOS
+- what actions the personal agent can help coordinate
+- what actions require explicit confirmation
+- which actions are only allowed in native CareOS
+- when a user is acting for themselves versus acting for another patient
+
+### UX principle
+
+Users should understand that a connected personal agent may help mediate and personalize care interactions, but CareOS still governs the care workflow.
+
+### Policy principle
+
+Clinical rigidity, urgency, escalation, and auditability are not optional and do not move out of CareOS.
+
+### Consent expectations
+
+The setup and settings experience should let the user understand and control:
+
+- whether a personal agent is connected
+- which role uses that agent
+- what the fallback surface is
+- what categories of context may be reflected into CareOS
+- what categories of actions the personal agent may coordinate or execute
+- how to revoke the connection or change the preference later
+
+## Decision Categories for Personalization
+
+Not all care interactions should be equally flexible.
+
+### Category A: Fixed clinical actions
+
+Examples:
+
+- time-rigid medication tasks
+- urgent escalation steps
+- policy-mandated check-ins
+
+User experience implication:
+
+- personalization can change phrasing, explanation, and compliant reminder style
+- personalization should not silently reinterpret the underlying action
+
+### Category B: Flexible operational actions
+
+Examples:
+
+- scheduling a non-urgent follow-up
+- rearranging a flexible care task window
+- coordinating a caregiver handoff
+
+User experience implication:
+
+- timing optimization, delegation support, and calendar-aware planning are appropriate
+
+### Category C: Contextual coaching and support
+
+Examples:
+
+- helping the user understand priorities
+- adapting tone based on stress or workload
+- planning the day around care tasks
+
+User experience implication:
+
+- broad personalization is appropriate as long as it does not silently alter care state
+
+### Category D: Escalation-required events
+
+Examples:
+
+- repeated missed critical medication
+- unsafe symptom state
+- emergency rules
+
+User experience implication:
+
+- the system may personalize explanation and support, but it should not hide the fact that escalation is happening
+
+## Canonical Experience Modes
+
+## 1. Patient with a connected personal agent
 
 ### Example
 
-Ravi is a 72-year-old patient who already uses an OpenClaw-backed personal agent for his calendar, daily planning, reminders, and general life organization.
+Ravi is a 72-year-old patient who already uses an OpenClaw-backed personal agent for calendar, planning, reminders, and day-to-day coordination.
 
 ### Preferred setup
 
 - role: patient
-- preferred surface: sovereign agent
+- preferred surface: connected personal agent
 - fallback: CareOS WhatsApp or voice
 
 ### Expected experience
 
 Ravi does not need to interact with CareOS directly most of the time.
+
 Instead:
 
-- CareOS sends care events to his sovereign agent
-- the sovereign agent knows his calendar, busyness, and preferred style
-- the sovereign agent personalizes reminders, explanations, and planning help
-- CareOS still decides what is clinically important and what escalation policy applies
+- CareOS sends care events to his connected personal agent
+- the personal agent uses his existing schedule and preferences to personalize engagement
+- CareOS still determines what matters clinically and which escalation rules apply
 
-### Example experience
+### Example interaction
 
 CareOS determines that a medication is due and policy says it is important and time-rigid.
 
-The sovereign agent may say:
+The personal agent may say:
 
-“You are between meetings and this medication matters today. Take it now if you can. If you need, I can help you adjust the rest of your afternoon.”
+> You are between meetings and this medication matters today. Take it now if you can. If you need, I can help you adjust the rest of your afternoon.
 
 If unresolved:
 
 - CareOS may escalate according to policy
-- fallback may be WhatsApp or voice
+- CareOS may fall back to WhatsApp or voice if required
 
-### What Ravi does not need to do
+### What Ravi should not need to do
 
-- he does not need to duplicate his calendar in CareOS
-- he does not need to manually restate every personal context item if the sovereign agent can reflect it
+- duplicate his calendar in CareOS
+- manually restate every personal preference that his connected personal agent already knows
 
-## Persona 2: Patient Without A Sovereign Agent
+## 2. Patient without a connected personal agent
 
 ### Example
 
-Lakshmi is a patient who uses WhatsApp but does not have a personal sovereign agent.
+Lakshmi is a patient who uses WhatsApp but does not have a connected personal agent.
 
 ### Preferred setup
 
@@ -162,16 +361,16 @@ Lakshmi is a patient who uses WhatsApp but does not have a personal sovereign ag
 
 ### Expected experience
 
-Lakshmi still gets a personalized experience through CareOS plus OpenClaw.
+Lakshmi still receives a personalized care experience through native CareOS plus OpenClaw.
 
-The personalization comes from:
+That personalization comes from care-relevant context available inside CareOS, such as:
 
-- her schedule
-- her current medications
-- durable facts she or her caregiver added
-- short-lived observations
+- care schedule
+- medications
+- durable facts
+- observations
 - day plans
-- care-team ownership context
+- care-team context
 
 ### How she provides context
 
@@ -181,71 +380,66 @@ She may say things like:
 - `note slept only 4 hours last night`
 - `plan doctor visit at 4 pm today`
 
-### Example experience
+### Example interaction
 
 Lakshmi asks:
 
 - `Which medicines are most important for me not to miss?`
 - `Given my sleep last night, should I take it easy today?`
 
-CareOS plus OpenClaw answers based on the care-specific context available inside CareOS.
+CareOS plus OpenClaw answers using the care-specific context available inside CareOS.
 
-### What is different from the sovereign-agent path
+### Product requirement
 
-- the personalization may be less broad because CareOS does not automatically know her full calendar or life context
-- she may need to add care-relevant context manually
+Lakshmi should not feel like she is using a second-class product. Native CareOS must remain a complete and trustworthy care experience.
 
-But:
-
-- the clinical care experience should still be strong
-- she should not feel like she has a second-class product
-
-## Persona 3: Caregiver With A Sovereign Agent
+## 3. Caregiver with a connected personal agent
 
 ### Example
 
-Anita is a daughter caring for her father. She uses a sovereign agent for her own work calendar, family planning, and daily coordination.
+Anita is a daughter caring for her father. She uses a connected personal agent for her own work calendar, family planning, and day-to-day coordination.
 
 ### Preferred setup
 
 - role: caregiver
 - patient context: father
-- preferred surface: sovereign agent
+- preferred surface: connected personal agent
 
 ### Expected experience
 
 When Anita is acting as caregiver:
 
-- CareOS should route patient-care interactions to her sovereign agent
-- the sovereign agent can factor in her availability, workload, and travel
-- CareOS can push due, missed, and assignment-related events to the sovereign agent
+- CareOS routes patient-care interactions to her connected personal agent when allowed
+- the personal agent factors in Anita’s availability, workload, and travel constraints
+- CareOS pushes due, missed, and assignment-related events to that surface when appropriate
 
-### Example experience
+### Example interaction
 
-Anita’s sovereign agent receives:
+Anita’s personal agent receives:
 
 - a missed appointment alert
 - a medication reminder for her father
-- a team assignment change
+- a care-team assignment change
 
-The sovereign agent may help her triage:
+The personal agent may help her triage:
 
 - what is critical
 - what can wait
 - what should be delegated
 
-### Important detail
+### Important UX detail
 
-The sovereign agent belongs to Anita as a person, not to her father as a patient.
-So the experience should feel like:
+The personal agent belongs to Anita as a person, not to her father as a patient.
 
-- “you are now acting for your father”
+The experience should therefore feel like:
+
+**You are now acting for your father**
 
 rather than:
 
-- “you are entering a different app identity”
+**You are entering a different app identity**
 
-## Persona 4: Caregiver Without A Sovereign Agent
+## 4. Caregiver without a connected personal agent
 
 ### Example
 
@@ -266,7 +460,7 @@ Suresh still gets:
 - assignment commands
 - OpenClaw-grounded answers inside CareOS
 
-### Example experience
+### Example interactions
 
 He can ask:
 
@@ -279,7 +473,7 @@ He can also provide care context manually:
 - `note mother is tired today`
 - `plan we will be out this afternoon`
 
-## Persona 5: Mixed-role User
+## 5. Mixed-role user
 
 ### Example
 
@@ -290,137 +484,222 @@ Meera is both:
 
 ### Preferred setup
 
-- as patient for self: sovereign agent
+- as patient for self: connected personal agent
 - as caregiver for husband: WhatsApp
 
 ### Expected experience
 
-CareOS should allow different surfaces for different roles and contexts.
+CareOS allows different surfaces for different roles and patient contexts.
 
 When Meera is managing her own care:
 
-- her sovereign agent is primary
+- her connected personal agent is primary
 
 When she is managing her husband’s care:
 
-- WhatsApp is primary
+- native CareOS WhatsApp is primary
 
-This should feel like a natural context shift, not account fragmentation.
+This must feel like a natural context shift, not account fragmentation.
 
 ## Experience Matrix
 
-### Patient + sovereign agent
+### Patient plus connected personal agent
 
 Expected characteristics:
 
 - richest personalization
 - less manual context entry
-- care events routed to sovereign agent first
+- care events routed to personal agent first
 - native fallback if needed
 
-### Patient + no sovereign agent
+### Patient plus no connected personal agent
 
 Expected characteristics:
 
-- native CareOS plus OpenClaw personalization
-- manual context entry may be needed
-- WhatsApp remains a viable main surface
+- strong native CareOS personalization
+- care-specific manual context entry when helpful
+- WhatsApp remains a viable primary surface
 
-### Caregiver + sovereign agent
+### Caregiver plus connected personal agent
 
 Expected characteristics:
 
 - richer triage and scheduling help
-- care events can be mediated through the caregiver’s personal context
-- strong fallback to native CareOS for high-urgency cases
+- care events mediated through caregiver context when allowed
+- strong native fallback for urgent or disallowed cases
 
-### Caregiver + no sovereign agent
+### Caregiver plus no connected personal agent
 
 Expected characteristics:
 
 - native CareOS remains fully usable
-- care-team and assignment flows still available
-- manual context entry remains possible
+- care-team and assignment flows remain strong
+- manual care-context entry remains possible
+
+## Moments of Truth
+
+These are the key moments where trust is won or lost. The product must handle them deliberately.
+
+### 1. First-time setup
+
+The user should understand:
+
+- what a connected personal agent is
+- that it is optional
+- what CareOS still owns
+- what the preferred surface means
+- what fallback means
+
+### 2. First care event through the connected personal agent
+
+The user should understand:
+
+- that the message originated from CareOS
+- that the personal agent is helping personalize the interaction
+- what action is being requested
+
+### 3. First fallback event
+
+If CareOS falls back to WhatsApp or voice, the user should understand:
+
+- why the preferred surface was not used
+- that the care task is still active
+- what the next step is
+
+### 4. Role switch
+
+When the same person changes role or active patient context, the experience should make that shift explicit.
+
+### 5. Urgent escalation
+
+The experience should remain calm and understandable, but should not hide or soften the fact that the event is urgent.
+
+### 6. Wrong-context prevention
+
+If the system suspects the user is acting in the wrong patient context, it should slow down and make the context explicit before allowing clinically meaningful actions.
 
 ## Typical User Journeys
 
-### Journey 1: Sovereign-agent-first medication support
+## Journey 1: Personal-agent-first medication support
 
 1. CareOS identifies a due care task.
-2. Policy says sovereign-agent routing is allowed and preferred.
-3. CareOS sends the event and policy envelope to the sovereign agent.
-4. The sovereign agent personalizes the interaction.
+2. Policy says personal-agent routing is allowed and preferred.
+3. CareOS sends the event and policy-bounded envelope to the connected personal agent.
+4. The personal agent personalizes the interaction.
 5. If the user acts, CareOS receives the outcome.
-6. If the user does not act and policy requires escalation, CareOS falls back.
+6. If the user does not act and policy requires escalation, CareOS falls back or escalates directly.
 
-### Journey 2: Native WhatsApp care management
+## Journey 2: Native WhatsApp care management
 
-1. User sends `schedule` or `status`.
-2. CareOS resolves native preferred surface.
-3. Native OpenClaw plus CareOS handles personalization.
-4. User can add context manually with commands like:
-   - `remember`
-   - `note`
-   - `plan`
-5. The same care engine remains active underneath.
+1. User sends a question or status update.
+2. CareOS resolves native CareOS as the active surface.
+3. Native CareOS plus OpenClaw handles personalization.
+4. User can add care context manually with commands such as `remember`, `note`, or `plan`.
+5. CareOS updates care context and continues the interaction.
 
-### Journey 3: Mixed-role context switch
+## Journey 3: Mixed-role context switch
 
-1. Same person interacts with CareOS.
-2. CareOS resolves active patient context and role.
-3. Surface router resolves preferred experience for that tuple.
-4. Interaction flows through sovereign agent or native path accordingly.
+1. The same person interacts with CareOS.
+2. CareOS resolves the current role and active patient context.
+3. Surface preference is applied for that combination.
+4. Interaction flows through the connected personal agent or native CareOS accordingly.
+5. The user can clearly see whom they are acting for.
 
-## What Personalization Looks Like
+## Journey 4: Personal agent unavailable
 
-### With a sovereign agent
+1. CareOS determines that the preferred surface is unavailable.
+2. CareOS routes to fallback according to policy and user settings.
+3. The user receives a message that explains the change in surface.
+4. CareOS preserves the task context and requested action.
+5. The user continues without needing to reconstruct context manually.
 
-Personalization can incorporate:
+## Role Clarity and Safeguards
 
-- calendar busyness
-- recent workload
-- transport situation
-- financial friction
-- caregiver stress/load
-- broader personal memory
+Mixed-role support requires more than passive clarity. It requires active safeguards.
 
-### Without a sovereign agent
+The experience should include patterns such as:
 
-Personalization can still incorporate:
+- persistent indication of the active role
+- persistent indication of the active patient context
+- explicit framing such as **acting for Ravi**
+- confirmation for clinically meaningful actions in caregiver mode when appropriate
+- context-switch flows that make the patient transition obvious
+- visible recent actions tied to the active patient
 
-- care plan
-- medications
-- durable clinical facts
-- observations
-- day plans
-- care-team responsibilities
+The goal is to prevent silent mistakes, especially when the same human is moving quickly between self-care and caregiving tasks.
 
-The experience should still feel thoughtful and context-aware, even if it is narrower.
+## Setup and Preference Experience
 
-## What Users May Need To Configure
+The setup flow should eventually let the user:
 
-### Users with sovereign agents
+1. connect or decline a personal agent
+2. choose preferred surface by role
+3. choose fallback surface by role
+4. review what information may be shared
+5. review what actions the personal agent may coordinate
+6. confirm that CareOS remains the care source of truth
+
+The settings experience should later let the user update:
+
+- preferred surface
+- fallback surface
+- permissions and consent
+- reflected-context categories
+- revocation of the personal-agent connection
+
+## Failure and Recovery Modes
+
+The experience should explicitly account for failure modes, not just ideal paths.
+
+### Personal agent unavailable
+
+CareOS should explain:
+
+- that the preferred surface could not be used
+- which fallback surface is being used
+- what care action is still active
+
+### Stale or conflicting reflected context
+
+CareOS should be able to:
+
+- ignore expired context
+- ask for clarification when reflected context conflicts with active care reality
+- avoid silently changing care state based on stale signals
+
+### Policy override by CareOS
+
+If the personal agent or preferred surface cannot be used because policy requires native escalation, the experience should say so clearly.
+
+### Wrong role or wrong patient context
+
+The experience should slow down, clarify context, and avoid silent clinically meaningful actions.
+
+## What Users May Need to Configure
+
+### Users with connected personal agents
 
 They may need to configure:
 
 - preferred surface by role
-- fallback surface
-- whether certain care actions can be autonomous
-- agent connection/registration
+- fallback surface by role
+- whether some categories of actions may be coordinated through the personal agent
+- agent connection or registration
+- basic notification preferences
 
-### Users without sovereign agents
+### Users without connected personal agents
 
 They may need to configure:
 
 - preferred native channel
 - reminder preferences
-- care-specific context through native commands
+- care-specific context through native commands or setup flows
 
-## Example Commands And Interactions
+## Example Commands and Interactions
 
-### Native CareOS examples
+## Native CareOS examples
 
-Patient or caregiver may say:
+Patients or caregivers may say:
 
 - `remember recent procedure: stent placed on 2026-02-26`
 - `note slept 4 hours last night`
@@ -429,103 +708,82 @@ Patient or caregiver may say:
 - `assign medications to 1 as responsible`
 - `who handles medications`
 
-These commands remain important even in a sovereign-agent world, because not every user will have an agent.
+These commands remain important even in a world with connected personal agents, because not every user will use one.
 
-### Sovereign-agent examples
+## Connected personal agent examples
 
-The user may never type a CareOS command directly.
-Instead, the sovereign agent may say:
+The user may never type a CareOS command directly. Instead, the connected personal agent may say:
 
-- “CareOS says your 8 PM medication is due.”
-- “You are busy at 4 PM and also have a care task then. Want me to help reschedule the flexible item?”
-- “For your father, CareOS says medications are assigned to you and appointments are assigned to your brother.”
+- CareOS says your 8 PM medication is due.
+- You are busy at 4 PM and also have a care task then. Want me to help reschedule the flexible item?
+- For your father, CareOS says medications are assigned to you and appointments are assigned to your brother.
 
-## What Changes For Support And Onboarding
+## Support and Observability Requirements
 
-### Onboarding needs to explain
+Support and operations teams need visibility into what the user actually experienced.
 
-- what a sovereign agent is
-- that it is optional
-- that native CareOS remains fully usable without it
-- how preferences can differ by role
-- what fallback means
-
-### Support needs to understand
+Support tooling should make it possible to understand:
 
 - which surface was preferred
-- whether a sovereign agent was active
+- which surface was actually used
+- whether a connected personal agent was active
 - whether fallback occurred
-- whether context came from sovereign reflection or native CareOS entry
+- why fallback occurred
+- what context came from native CareOS entry versus personal-agent mediation
+- what actions were taken and how they changed care state
 
-## Possibilities This Enables
-
-If implemented well, this model enables:
-
-- richer personal engagement without weakening care governance
-- role-specific experience selection
-- person-based agents acting across multiple patient contexts
-- better use of SDOH and real-world constraints in care planning
-- more resilient fallback when the personal agent is absent
-- more continuity between personal planning and care execution
-
-## Risks To Watch In UX
-
-### Risk 1: Users think sovereign agent replaces CareOS entirely
-
-It should not.
-CareOS still owns the care state and policy layer.
-
-### Risk 2: Users without sovereign agents feel second-class
-
-This must be avoided.
-Native OpenClaw plus CareOS should remain a genuine personalization path.
-
-### Risk 3: Role confusion
-
-A mixed-role user may not know whether they are acting as patient or caregiver.
-
-The experience should make context clear:
-
-- who the active patient is
-- what role the person is currently acting in
-- what surface is active
-
-### Risk 4: Unexpected fallback
-
-If the sovereign agent is unavailable and CareOS falls back to WhatsApp or voice, the experience should explain why, not feel random.
+This is essential for debugging trust, adoption, and patient-safety issues.
 
 ## Recommended Product Language
 
 Preferred user-facing language:
 
-- “personal agent” or “sovereign agent”
-- “preferred interaction surface”
-- “fallback surface”
-- “care personalization”
-- “acting for [patient name]”
+- personal agent
+- preferred interaction surface
+- fallback surface
+- care personalization
+- acting for [patient name]
 
-Avoid user-facing language that sounds too infrastructural, such as:
+Avoid user-facing language that sounds infrastructural, such as:
 
 - endpoint
 - adapter
 - routing tuple
 - transport boundary
 
-## Definition Of A Good Experience
+Internally, the term `sovereign agent` may still be useful in architecture and strategy documents. User-facing experiences should generally prefer `personal agent` unless there is a specific reason to emphasize sovereignty or user control explicitly.
+
+## Definition of a Good Experience
 
 The experience is good if:
 
-- users with a sovereign agent feel that CareOS works through their preferred personal layer
-- users without a sovereign agent still feel that CareOS understands their care context
-- the same human can have different preferences in different roles without confusion
-- urgent care requirements are still enforced consistently
+- users with a connected personal agent feel that CareOS works through their preferred personal layer
+- users without a connected personal agent still feel understood and supported
+- the same human can use different surfaces in different roles without confusion
+- urgent care requirements remain consistently enforced
 - fallback behavior feels safe and understandable
+- clinically meaningful actions remain attributable and auditable
+- users know who they are acting as and for at all times
 
-## Immediate Next UX Step
+## Immediate Product and UX Next Steps
 
-Once phase 1 is implemented, this manual should be updated with:
+The next step is not just to wait for implementation. This model should now be turned into testable product artifacts.
+
+Priority next artifacts:
+
+1. setup flow for connecting a personal agent
+2. role and surface preference model
+3. fallback explanation patterns
+4. context-switch UX for mixed-role users
+5. permission and consent UX
+6. canonical conversation transcripts for each major mode
+7. support and audit-view requirements
+8. success metrics for comprehension, completion, fallback recovery, and role-switch accuracy
+
+Once phase 1 is implemented, this document should be updated with:
 
 - concrete setup screens or commands
 - exact role preference choices
-- fallback examples
+- fallback message examples
 - screenshots or sample conversations
+- observed UX learnings from real users
