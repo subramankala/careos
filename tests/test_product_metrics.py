@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from careos.app_context import context
+from careos.domain.enums.core import Criticality, Flexibility
+from careos.domain.models.api import AddWinsRequest, CarePlanCreate, WinDefinitionCreate, WinInstanceCreate
 
 
 def test_product_metrics_overview_tracks_onboarding_and_feedback() -> None:
@@ -62,6 +66,78 @@ def test_product_metrics_overview_tracks_onboarding_and_feedback() -> None:
         correlation_id="metrics-feedback",
     )
 
+    care_plan = context.store.create_care_plan(
+        CarePlanCreate(
+            patient_id=patient_id,
+            created_by_participant_id=identity.participant_id,
+            status="active",
+            version=1,
+            source_type="manual",
+        )
+    )
+    start = datetime.now(UTC).replace(second=0, microsecond=0)
+    context.store.add_wins(
+        str(care_plan["id"]),
+        AddWinsRequest(
+            patient_id=patient_id,
+            definitions=[
+                WinDefinitionCreate(
+                    category="medication",
+                    title="Morning medication",
+                    instructions="Take tablet",
+                    criticality=Criticality.MEDIUM,
+                    flexibility=Flexibility.WINDOWED,
+                ),
+                WinDefinitionCreate(
+                    category="meal",
+                    title="Lunch",
+                    instructions="Have lunch",
+                    criticality=Criticality.LOW,
+                    flexibility=Flexibility.FLEXIBLE,
+                ),
+            ],
+            instances=[
+                WinInstanceCreate(
+                    scheduled_start=start,
+                    scheduled_end=start + timedelta(minutes=30),
+                )
+            ],
+        ),
+    )
+    context.store.log_product_telemetry_event(
+        event_name="care_action_completed",
+        source="care_action",
+        tenant_id=identity.tenant_id,
+        patient_id=patient_id,
+        participant_id=identity.participant_id,
+        actor_role=identity.participant_role.value,
+        channel="whatsapp",
+        event_value="medication",
+        structured_context={"category": "medication", "source": "short_reply_single_due", "minutes": 0},
+    )
+    context.store.log_product_telemetry_event(
+        event_name="care_action_skipped",
+        source="care_action",
+        tenant_id=identity.tenant_id,
+        patient_id=patient_id,
+        participant_id=identity.participant_id,
+        actor_role=identity.participant_role.value,
+        channel="whatsapp",
+        event_value="meal",
+        structured_context={"category": "meal", "source": "legacy_router", "minutes": 0},
+    )
+    context.store.log_product_telemetry_event(
+        event_name="care_action_delayed",
+        source="care_action",
+        tenant_id=identity.tenant_id,
+        patient_id=patient_id,
+        participant_id=identity.participant_id,
+        actor_role=identity.participant_role.value,
+        channel="whatsapp",
+        event_value="medication",
+        structured_context={"category": "medication", "source": "intent_parser_command", "minutes": 30},
+    )
+
     payload = context.store.get_product_metrics_overview(days=7)
 
     assert payload["onboarding"]["started"] == 1
@@ -70,6 +146,13 @@ def test_product_metrics_overview_tracks_onboarding_and_feedback() -> None:
     assert payload["onboarding"]["setup_completed"] == 1
     assert payload["feedback"]["total"] == 2
     assert payload["feedback"]["setup_ratings"]["somewhat"] == 1
+    assert payload["actions"]["completed"] == 1
+    assert payload["actions"]["skipped"] == 1
+    assert payload["actions"]["delayed"] == 1
+    assert any(item["source"] == "short_reply_single_due" for item in payload["actions"]["by_source"])
+    assert payload["task_categories"]["active_category_count"] >= 2
+    assert any(item["category"] == "medication" and item["recent_actions"] >= 2 for item in payload["task_categories"]["categories"])
+    assert any(item["category"] == "meal" and item["skipped"] == 1 for item in payload["task_categories"]["categories"])
     assert any(item["command"] == "feedback" for item in payload["usage"]["top_commands"])
     assert any(item["command"] == "help" for item in payload["usage"]["top_commands"])
     assert any(item["event_name"] == "participant_feedback_captured" for item in payload["telemetry"]["events_by_name"])

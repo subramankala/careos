@@ -782,6 +782,37 @@ def _due_medication_items(today: dict) -> list[dict]:
     ]
 
 
+def _log_care_action_event(
+    *,
+    context: dict,
+    action: str,
+    item: dict | None = None,
+    source: str,
+    category: str | None = None,
+    minutes: int = 0,
+) -> None:
+    resolved_category = str(category or (item or {}).get("category") or "unknown").strip().lower() or "unknown"
+    telemetry_logger = getattr(app_context.store, "log_product_telemetry_event", None)
+    if telemetry_logger is None:
+        return
+    telemetry_logger(
+        event_name=f"care_action_{action}",
+        source="care_action",
+        tenant_id=str(context.get("tenant_id") or "") or None,
+        patient_id=str(context.get("patient_id") or "") or None,
+        participant_id=str(context.get("participant_id") or "") or None,
+        actor_role=str(context.get("participant_role") or ""),
+        channel="whatsapp",
+        event_value=resolved_category,
+        structured_context={
+            "category": resolved_category,
+            "source": source,
+            "minutes": int(minutes or 0),
+            "win_instance_id": str((item or {}).get("win_instance_id") or ""),
+        },
+    )
+
+
 def _multiple_due_items_reply(actionable: list[dict], *, medications_only: bool = False) -> str:
     lines = [
         "I found multiple due medications from recent reminders. Reply with one of these instead:"
@@ -812,6 +843,7 @@ def _implicit_completion_reply(text: str, context: dict, today: dict) -> str | N
             return "I could not find any currently due medications to mark completed. Send 'schedule' first if needed."
         for item in due_medications:
             adapter.complete_win(str(item["win_instance_id"]), str(context["participant_id"]))
+            _log_care_action_event(context=context, action="completed", item=item, source="bulk_medication_reply")
         if len(due_medications) == 1:
             return f"Marked {str(due_medications[0].get('title', 'medication')).lower()} as completed."
         return f"Marked {len(due_medications)} due medications as completed."
@@ -824,10 +856,20 @@ def _implicit_completion_reply(text: str, context: dict, today: dict) -> str | N
         if matching_due_medications and len(due_medications) > 1:
             return _multiple_due_items_reply(due_medications, medications_only=True)
         adapter.complete_win(win_instance_id, str(context["participant_id"]))
+        matched_item = next((item for item in actionable if str(item.get("win_instance_id") or "") == win_instance_id), None)
+        inferred_category = str((matched_item or {}).get("category") or ("medication" if matching_due_medications else "unknown"))
+        _log_care_action_event(
+            context=context,
+            action="completed",
+            item=matched_item,
+            category=inferred_category,
+            source="short_reply_reminder_context",
+        )
         return f"Marked {title.lower()} as completed."
     if len(actionable) == 1:
         item = actionable[0]
         adapter.complete_win(str(item["win_instance_id"]), str(context["participant_id"]))
+        _log_care_action_event(context=context, action="completed", item=item, source="short_reply_single_due")
         return f"Marked {str(item.get('title', 'task')).lower()} as completed."
     if len(actionable) > 1:
         return _multiple_due_items_reply(actionable)
@@ -1152,17 +1194,21 @@ def _execute_intent(intent: IntentParseResult, context: dict) -> str:
         timeline = today.get("timeline", [])
         if item_no > len(timeline):
             return "Item number is out of range. Send 'schedule' first."
-        instance_id = str(timeline[item_no - 1]["win_instance_id"])
+        item = dict(timeline[item_no - 1])
+        instance_id = str(item["win_instance_id"])
         if intent.intent == "done":
             adapter.complete_win(instance_id, participant_id)
+            _log_care_action_event(context=context, action="completed", item=item, source="intent_parser_command")
             return f"Marked {item_no} as completed."
         if intent.intent == "skip":
             adapter.skip_win(instance_id, participant_id)
+            _log_care_action_event(context=context, action="skipped", item=item, source="intent_parser_command")
             return f"Marked {item_no} as skipped."
         minutes = int(intent.args.get("minutes", 0) or 0)
         if minutes <= 0:
             return "Please provide delay minutes, e.g. delay 2 30."
         adapter.delay_win(instance_id, participant_id, minutes)
+        _log_care_action_event(context=context, action="delayed", item=item, source="intent_parser_command", minutes=minutes)
         return f"Delayed {item_no} by {minutes} minutes."
     return "Please rephrase. I can help with schedule, tomorrow, status, medication counts, done, skip, and delay."
 
@@ -1205,6 +1251,19 @@ def _execute_pending_action(pending: PendingGatewayAction) -> str:
         return f"Moved {proposal.title.lower()}. You can ask for your schedule to verify it."
     if plan.execution_strategy == "complete_task" and proposal.target_instance_id:
         adapter.complete_win(str(payload["win_instance_id"]), str(payload["actor_id"]))
+        binding = adapter.get_win_binding(str(payload["win_instance_id"]))
+        _log_care_action_event(
+            context={
+                "tenant_id": str(payload.get("tenant_id") or ""),
+                "patient_id": str(payload.get("patient_id") or ""),
+                "participant_id": str(payload.get("actor_id") or ""),
+                "participant_role": "",
+            },
+            action="completed",
+            item=binding or {},
+            source="pending_action_confirmed",
+            category=str((binding or {}).get("category") or ""),
+        )
         return f"Marked {proposal.title.lower()} as completed."
     return "I could not execute that pending action."
 

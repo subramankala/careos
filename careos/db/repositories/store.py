@@ -181,6 +181,7 @@ def _build_product_metrics_overview(
     message_events: list[dict],
     feedback_items: list[dict],
     telemetry_events: list[dict],
+    task_category_rows: list[dict],
     active_onboarding_sessions: int,
     now: datetime,
     since: datetime,
@@ -211,6 +212,60 @@ def _build_product_metrics_overview(
         event_name = str(item.get("event_name") or "")
         if event_name:
             telemetry_by_name[event_name] += 1
+
+    action_events = [
+        item
+        for item in telemetry_events
+        if str(item.get("event_name") or "") in {"care_action_completed", "care_action_skipped", "care_action_delayed"}
+    ]
+    action_totals = {"completed": 0, "skipped": 0, "delayed": 0}
+    action_by_source: dict[str, int] = defaultdict(int)
+    action_category_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"completed": 0, "skipped": 0, "delayed": 0, "total": 0})
+    for item in action_events:
+        event_name = str(item.get("event_name") or "")
+        context = dict(item.get("structured_context") or {})
+        category = str(context.get("category") or "unknown").strip().lower() or "unknown"
+        source = str(context.get("source") or "unknown").strip().lower() or "unknown"
+        if event_name == "care_action_completed":
+            action_totals["completed"] += 1
+            action_category_metrics[category]["completed"] += 1
+        elif event_name == "care_action_skipped":
+            action_totals["skipped"] += 1
+            action_category_metrics[category]["skipped"] += 1
+        elif event_name == "care_action_delayed":
+            action_totals["delayed"] += 1
+            action_category_metrics[category]["delayed"] += 1
+        action_category_metrics[category]["total"] += 1
+        action_by_source[source] += 1
+
+    categories_by_name: dict[str, dict[str, int]] = defaultdict(lambda: {"definition_count": 0, "patient_count": 0})
+    for row in task_category_rows:
+        category = str(row.get("category") or "").strip().lower()
+        if not category:
+            continue
+        categories_by_name[category]["definition_count"] += int(row.get("definition_count", 0) or 0)
+        categories_by_name[category]["patient_count"] += int(row.get("patient_count", 0) or 0)
+
+    category_items = []
+    for category in sorted(
+        set(categories_by_name.keys()) | set(action_category_metrics.keys()),
+        key=lambda item: (
+            -(categories_by_name.get(item, {}).get("definition_count", 0)),
+            -(action_category_metrics.get(item, {}).get("total", 0)),
+            item,
+        ),
+    ):
+        category_items.append(
+            {
+                "category": category,
+                "definition_count": categories_by_name.get(category, {}).get("definition_count", 0),
+                "patient_count": categories_by_name.get(category, {}).get("patient_count", 0),
+                "recent_actions": action_category_metrics.get(category, {}).get("total", 0),
+                "completed": action_category_metrics.get(category, {}).get("completed", 0),
+                "skipped": action_category_metrics.get(category, {}).get("skipped", 0),
+                "delayed": action_category_metrics.get(category, {}).get("delayed", 0),
+            }
+        )
 
     onboarding_started = telemetry_by_name.get("onboarding_started", 0)
     onboarding_completed = (
@@ -249,6 +304,16 @@ def _build_product_metrics_overview(
             "setup_completed": telemetry_by_name.get("onboarding_setup_completed", 0),
             "active_sessions": active_onboarding_sessions,
             "completion_rate_percent": completion_rate,
+        },
+        "actions": {
+            "completed": action_totals["completed"],
+            "skipped": action_totals["skipped"],
+            "delayed": action_totals["delayed"],
+            "by_source": [{"source": name, "count": action_by_source[name]} for name in sorted(action_by_source, key=lambda item: (-action_by_source[item], item))],
+        },
+        "task_categories": {
+            "active_category_count": len([item for item in category_items if item["definition_count"] > 0]),
+            "categories": category_items,
         },
         "telemetry": {
             "events_by_name": [{"event_name": name, "count": telemetry_by_name[name]} for name in sorted(telemetry_by_name, key=lambda item: (-telemetry_by_name[item], item))],
@@ -1972,6 +2037,29 @@ class InMemoryStore(Store):
         message_events = [dict(row) for row in self.message_events if _matches_window(row)]
         feedback_items = [dict(row) for row in self.participant_feedback if _matches_window(row)]
         telemetry_events = [dict(row) for row in self.product_telemetry_events if _matches_window(row)]
+        active_plan_ids = {
+            str(plan_id)
+            for plan_id, plan in self.care_plans.items()
+            if str(plan.get("status") or "") == "active"
+        }
+        task_category_rows: list[dict] = []
+        for definition in self.win_definitions.values():
+            if active_plan_ids and str(definition.get("care_plan_id") or "") not in active_plan_ids:
+                continue
+            definition_patient_ids = {
+                str(instance.get("patient_id") or "")
+                for instance in self.win_instances.values()
+                if str(instance.get("win_definition_id") or "") == str(definition.get("id") or "")
+            }
+            if patient_filter and patient_filter not in definition_patient_ids:
+                continue
+            task_category_rows.append(
+                {
+                    "category": str(definition.get("category") or ""),
+                    "definition_count": 1,
+                    "patient_count": 1 if definition_patient_ids else 0,
+                }
+            )
         active_sessions = 0
         for session in self.onboarding_sessions.values():
             if str(session.get("status") or "") != "active":
@@ -1984,6 +2072,7 @@ class InMemoryStore(Store):
             message_events=message_events,
             feedback_items=feedback_items,
             telemetry_events=telemetry_events,
+            task_category_rows=task_category_rows,
             active_onboarding_sessions=active_sessions,
             now=now,
             since=since,
@@ -3967,6 +4056,25 @@ class PostgresStore(Store):
             cur.execute(telemetry_sql, tuple(params))
             telemetry_events = [_row_dict(cur, row) for row in cur.fetchall()]
 
+            task_category_sql = """
+            SELECT wd.category,
+                   COUNT(*) AS definition_count,
+                   COUNT(DISTINCT cp.patient_id) AS patient_count
+            FROM win_definitions wd
+            JOIN care_plans cp ON cp.id = wd.care_plan_id
+            WHERE cp.status = 'active'
+            """
+            task_category_params: list[object] = []
+            if patient_id:
+                task_category_sql += " AND cp.patient_id = %s"
+                task_category_params.append(patient_id)
+            task_category_sql += """
+            GROUP BY wd.category
+            ORDER BY COUNT(*) DESC, wd.category ASC
+            """
+            cur.execute(task_category_sql, tuple(task_category_params))
+            task_category_rows = [_row_dict(cur, row) for row in cur.fetchall()]
+
             cur.execute(active_session_sql)
             active_sessions = int(cur.fetchone()[0])
 
@@ -3974,6 +4082,7 @@ class PostgresStore(Store):
             message_events=message_events,
             feedback_items=feedback_items,
             telemetry_events=telemetry_events,
+            task_category_rows=task_category_rows,
             active_onboarding_sessions=active_sessions,
             now=now,
             since=since,

@@ -88,6 +88,7 @@ class DeterministicRouter(ConversationEngine):
                         text=(error or "Unknown win reference.") if not completed else f"Stopped after marking {', '.join(completed)}. {error or 'Unknown win reference.'}",
                     )
                 self.win_service.complete(win_id, context.participant_id)
+                self._log_care_action(context=context, win_id=win_id, action="completed", source="legacy_router_batch" if len(refs) > 1 else "legacy_router")
                 completed.append(ref)
             if len(completed) == 1:
                 return CommandResult(action="done", text=f"Marked {completed[0]} as completed.")
@@ -99,6 +100,7 @@ class DeterministicRouter(ConversationEngine):
             if win_id is None:
                 return CommandResult(action="skip", text=error or "Unknown win reference.")
             self.win_service.skip(win_id, context.participant_id)
+            self._log_care_action(context=context, win_id=win_id, action="skipped", source="legacy_router")
             return CommandResult(action="skip", text=f"Marked {ref} as skipped.")
 
         if command.startswith("delay "):
@@ -111,6 +113,7 @@ class DeterministicRouter(ConversationEngine):
                 return CommandResult(action="delay", text=error or "Unknown win reference.")
             minutes = int(parts[2])
             self.win_service.delay(win_id, context.participant_id, minutes)
+            self._log_care_action(context=context, win_id=win_id, action="delayed", source="legacy_router", minutes=minutes)
             return CommandResult(action="delay", text=f"Delayed {ref} by {minutes} minutes.")
 
         return CommandResult(
@@ -147,3 +150,34 @@ class DeterministicRouter(ConversationEngine):
             if token.strip() and token.strip().lower() not in ignored
         ]
         return tokens
+
+    def _log_care_action(
+        self,
+        *,
+        context: ParticipantContext,
+        win_id: str,
+        action: str,
+        source: str,
+        minutes: int = 0,
+    ) -> None:
+        binding = self.win_service.store.get_win_binding(win_id) or {}
+        category = str(binding.get("category") or "unknown").strip().lower() or "unknown"
+        telemetry_logger = getattr(self.win_service.store, "log_product_telemetry_event", None)
+        if telemetry_logger is None:
+            return
+        telemetry_logger(
+            event_name=f"care_action_{action}",
+            source="care_action",
+            tenant_id=context.tenant_id,
+            patient_id=context.patient_id,
+            participant_id=context.participant_id,
+            actor_role=context.participant_role.value,
+            channel="whatsapp",
+            event_value=category,
+            structured_context={
+                "category": category,
+                "source": source,
+                "minutes": int(minutes or 0),
+                "win_instance_id": win_id,
+            },
+        )
