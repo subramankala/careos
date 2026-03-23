@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from careos.app_context import context
 from careos.domain.enums.core import Criticality, Flexibility, WinState
+from careos.integrations.twilio.sender import TwilioWhatsAppSender
+from careos.settings import settings
 
 router = APIRouter()
 
@@ -126,6 +129,27 @@ class PrivacyRequestCreateRequest(BaseModel):
     jurisdiction: str = ""
     reason: str = ""
     structured_context: dict = Field(default_factory=dict)
+
+
+class AdminOutboundMessageRequest(BaseModel):
+    participant_id: str
+    body: str
+    patient_id: str | None = None
+    privacy_request_id: str | None = None
+    operator_label: str = "admin_cli"
+
+
+def _resolve_outbound_patient_id(participant_id: str, explicit_patient_id: str | None = None) -> str:
+    if explicit_patient_id:
+        return explicit_patient_id
+    linked_patients = context.identity_service.list_linked_patients(participant_id)
+    linked_patient_ids = {item.patient_id for item in linked_patients}
+    active_patient_id = context.identity_service.get_active_patient_context(participant_id)
+    if active_patient_id and active_patient_id in linked_patient_ids:
+        return active_patient_id
+    if len(linked_patients) == 1:
+        return linked_patients[0].patient_id
+    raise HTTPException(status_code=400, detail="patient_id is required when participant has zero or multiple linked patients")
 
 
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
@@ -652,6 +676,61 @@ def export_subject_data(subject_participant_id: str = Query(...)) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"bundle": bundle}
+
+
+@router.post("/internal/admin/messages")
+def send_admin_message(payload: AdminOutboundMessageRequest) -> dict:
+    participant = context.store.get_participant_record(payload.participant_id)
+    if participant is None:
+        raise HTTPException(status_code=404, detail="participant not found")
+
+    phone_number = str(participant.get("phone_number") or "").strip()
+    tenant_id = str(participant.get("tenant_id") or "").strip()
+    if not phone_number or not tenant_id:
+        raise HTTPException(status_code=400, detail="participant is missing phone_number or tenant_id")
+
+    body = str(payload.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="body is required")
+
+    patient_id = _resolve_outbound_patient_id(payload.participant_id, payload.patient_id)
+    sender = TwilioWhatsAppSender(
+        account_sid=settings.twilio_account_sid,
+        auth_token=settings.twilio_auth_token,
+        from_number=settings.twilio_whatsapp_number,
+    )
+    message_sid = sender.send_text(to_number=phone_number, body=body)
+    correlation_id = message_sid or f"admin_{uuid4()}"
+    context.messaging.log_outbound(
+        tenant_id=tenant_id,
+        patient_id=patient_id,
+        participant_id=payload.participant_id,
+        body=body,
+        correlation_id=correlation_id,
+    )
+    context.store.log_product_telemetry_event(
+        event_name="admin_message_sent",
+        source="admin_support",
+        tenant_id=tenant_id,
+        patient_id=patient_id,
+        participant_id=payload.participant_id,
+        actor_role="admin",
+        channel="whatsapp",
+        event_value=str(payload.privacy_request_id or ""),
+        structured_context={
+            "operator_label": str(payload.operator_label or "admin_cli"),
+            "privacy_request_id": str(payload.privacy_request_id or ""),
+            "message_sid": message_sid,
+        },
+    )
+    return {
+        "ok": True,
+        "participant_id": payload.participant_id,
+        "patient_id": patient_id,
+        "phone_number": phone_number,
+        "message_sid": message_sid,
+        "privacy_request_id": payload.privacy_request_id,
+    }
 
 
 @router.get("/internal/dashboard/task-criticality")

@@ -197,6 +197,23 @@ def _cmd_metrics_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_message_send(args: argparse.Namespace) -> int:
+    _require_login()
+    payload = _api_request(
+        "POST",
+        "/internal/admin/messages",
+        {
+            "participant_id": args.participant_id,
+            "body": args.body,
+            "patient_id": args.patient_id,
+            "privacy_request_id": args.privacy_request_id,
+            "operator_label": args.operator_label,
+        },
+    )
+    _print_json(payload)
+    return 0
+
+
 def _cmd_privacy_requests_list(args: argparse.Namespace) -> int:
     _require_login()
     query = {}
@@ -259,6 +276,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     logout = subparsers.add_parser("logout", help="Clear the local admin CLI session.")
     logout.set_defaults(func=_cmd_logout)
+
+    message = subparsers.add_parser("message", help="Operator outbound messaging commands.")
+    message_sub = message.add_subparsers(dest="message_command", required=True)
+    message_send = message_sub.add_parser("send", help="Send a WhatsApp message to a participant.")
+    message_send.add_argument("--participant-id", required=True)
+    message_send.add_argument("--body", required=True)
+    message_send.add_argument("--patient-id")
+    message_send.add_argument("--privacy-request-id")
+    message_send.add_argument("--operator-label", default="admin_cli")
+    message_send.set_defaults(func=_cmd_message_send)
 
     metrics = subparsers.add_parser("metrics", help="Metrics monitoring commands.")
     metrics_sub = metrics.add_subparsers(dest="metrics_command", required=True)

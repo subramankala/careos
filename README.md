@@ -321,6 +321,7 @@ python3 scripts/admin_cli.py login
 Common commands:
 ```bash
 python3 scripts/admin_cli.py metrics overview --days 30
+python3 scripts/admin_cli.py message send --participant-id <participant-id> --body "We received your request and have a follow-up question."
 python3 scripts/admin_cli.py privacy requests list
 python3 scripts/admin_cli.py privacy requests create --type access --subject-participant-id <participant-id> --jurisdiction GDPR
 python3 scripts/admin_cli.py privacy export --subject-participant-id <participant-id> --out export.json
@@ -342,9 +343,11 @@ Current product behavior:
 - `see my feedback` shows recent feedback submitted by that participant
 
 Current operator/admin tooling:
+- `POST /internal/admin/messages`
 - `GET /internal/privacy/requests`
 - `POST /internal/privacy/requests`
 - `GET /internal/privacy/export?subject_participant_id=<id>`
+- `python3 scripts/admin_cli.py message send ...`
 - `python3 scripts/admin_cli.py privacy ...`
 
 Scope boundary:
