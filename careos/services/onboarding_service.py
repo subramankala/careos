@@ -85,6 +85,35 @@ class OnboardingService:
         normalized = " ".join(body.strip().lower().split())
         return normalized in {"restart onboarding", "start onboarding again"}
 
+    def _is_support_trigger(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        return normalized in {"support", "support menu", "privacy", "account help", "help with my account"}
+
+    def _parse_support_action(self, body: str) -> str | None:
+        normalized = " ".join(body.strip().lower().split())
+        mapping = {
+            "1": "feedback_history",
+            "show my feedback": "feedback_history",
+            "see my feedback": "feedback_history",
+            "my feedback": "feedback_history",
+            "my feedbacks": "feedback_history",
+            "feedback history": "feedback_history",
+            "2": "request_deletion",
+            "delete my profile": "request_deletion",
+            "delete my account": "request_deletion",
+            "erase my data": "request_deletion",
+            "3": "request_export",
+            "export my data": "request_export",
+            "download my data": "request_export",
+            "4": "privacy_requests",
+            "my privacy requests": "privacy_requests",
+            "privacy requests": "privacy_requests",
+            "request status": "privacy_requests",
+        }
+        if normalized in {"cancel", "back", "exit", "done"}:
+            return "cancel"
+        return mapping.get(normalized)
+
     def maybe_handle_message(
         self,
         *,
@@ -104,6 +133,15 @@ class OnboardingService:
         )
         if feedback_reply is not None:
             return feedback_reply
+
+        support_reply = self._maybe_handle_support_message(
+            sender_phone=sender_phone,
+            body=body,
+            identity=identity,
+            session=session,
+        )
+        if support_reply is not None:
+            return support_reply
 
         if identity is not None and linked_patient_count > 0 and session is not None and session.status == "active":
             if self._is_onboarding_cancel_command(body):
@@ -451,6 +489,175 @@ class OnboardingService:
         session_data.pop("setup_draft", None)
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
         return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
+
+    def _maybe_handle_support_message(
+        self,
+        *,
+        sender_phone: str,
+        body: str,
+        identity: ParticipantIdentity | None,
+        session,
+    ) -> str | None:
+        if identity is None:
+            return None
+
+        if session is not None and session.status == "active" and session.state == "support_menu":
+            action = self._parse_support_action(body)
+            if action is None:
+                return self._support_menu_prompt()
+            if action == "cancel":
+                self._save_session(
+                    sender_phone,
+                    state="completed",
+                    status="completed",
+                    data=dict(session.data),
+                    completion_note="support_cancelled",
+                )
+                return "Okay. Reply 'support' anytime."
+            return self._execute_support_action(sender_phone=sender_phone, identity=identity, action=action)
+
+        if not self._is_support_trigger(body):
+            return None
+
+        if session is not None and session.status == "active":
+            if session.state.startswith("setup_") or session.state in {
+                "choose_role",
+                "self_patient_name",
+                "caregiver_name",
+                "caregiver_patient_name",
+                "caregiver_patient_phone",
+                "caregiver_relationship",
+                "verification_pending",
+                "patient_invite_caregiver_phone",
+                "patient_invite_preset",
+            }:
+                return "Please finish or cancel onboarding/setup first. Then reply 'support'."
+
+        self._save_session(
+            sender_phone,
+            state="support_menu",
+            status="active",
+            data={"support_participant_id": identity.participant_id},
+            completion_note="",
+        )
+        self._log_product_telemetry(
+            event_name="support_menu_opened",
+            source="whatsapp_support",
+            identity=identity,
+            participant_id=identity.participant_id,
+        )
+        return self._support_menu_prompt()
+
+    def _execute_support_action(self, *, sender_phone: str, identity: ParticipantIdentity, action: str) -> str:
+        self._save_session(
+            sender_phone,
+            state="completed",
+            status="completed",
+            data={"support_action": action},
+            completion_note=f"support_{action}",
+        )
+        if action == "feedback_history":
+            self._log_product_telemetry(
+                event_name="support_feedback_history_requested",
+                source="whatsapp_support",
+                identity=identity,
+                participant_id=identity.participant_id,
+            )
+            return self._participant_feedback_summary(identity.participant_id)
+        if action == "request_deletion":
+            existing = next(
+                (
+                    item
+                    for item in self.store.list_privacy_requests(subject_participant_id=identity.participant_id)
+                    if str(item.get("request_type") or "") == "erasure" and str(item.get("status") or "") == "open"
+                ),
+                None,
+            )
+            request = existing or self.store.create_privacy_request(
+                request_type="erasure",
+                subject_participant_id=identity.participant_id,
+                requested_by_participant_id=identity.participant_id,
+                jurisdiction="",
+                reason="user_requested_via_whatsapp_support",
+                structured_context={"channel": "whatsapp_support"},
+            )
+            self._log_product_telemetry(
+                event_name="support_erasure_requested",
+                source="whatsapp_support",
+                identity=identity,
+                participant_id=identity.participant_id,
+                event_value=str(request.get("id") or ""),
+            )
+            reference = str(request.get("id") or "")[:8]
+            return (
+                "I created a profile deletion request for review. "
+                f"Reference: {reference}. This does not delete data immediately. Reply 'support' anytime for more options."
+            )
+        if action == "request_export":
+            request = self.store.create_privacy_request(
+                request_type="export",
+                subject_participant_id=identity.participant_id,
+                requested_by_participant_id=identity.participant_id,
+                jurisdiction="",
+                reason="user_requested_via_whatsapp_support",
+                structured_context={"channel": "whatsapp_support"},
+            )
+            self._log_product_telemetry(
+                event_name="support_export_requested",
+                source="whatsapp_support",
+                identity=identity,
+                participant_id=identity.participant_id,
+                event_value=str(request.get("id") or ""),
+            )
+            reference = str(request.get("id") or "")[:8]
+            return f"I created a data export request. Reference: {reference}. Reply 'support' anytime for more options."
+        if action == "privacy_requests":
+            self._log_product_telemetry(
+                event_name="support_privacy_requests_viewed",
+                source="whatsapp_support",
+                identity=identity,
+                participant_id=identity.participant_id,
+            )
+            return self._privacy_request_summary(identity.participant_id)
+        return self._support_menu_prompt()
+
+    def _participant_feedback_summary(self, participant_id: str) -> str:
+        feedback_items = self.store.list_participant_feedback(participant_id=participant_id, limit=5)
+        if not feedback_items:
+            return "You have not submitted any feedback yet. Send FEEDBACK <message> anytime."
+        lines = ["Your recent feedback:"]
+        for index, item in enumerate(feedback_items, start=1):
+            feedback_type = str(item.get("feedback_type") or "feedback").replace("_", " ")
+            message = str(item.get("message") or "").strip()
+            created_at = item.get("created_at")
+            created_label = created_at.date().isoformat() if hasattr(created_at, "date") else ""
+            lines.append(f"{index}. {feedback_type} ({created_label}): {message}")
+        lines.append("Reply 'support' for more options.")
+        return "\n".join(lines)
+
+    def _privacy_request_summary(self, participant_id: str) -> str:
+        items = self.store.list_privacy_requests(subject_participant_id=participant_id)[:5]
+        if not items:
+            return "You do not have any privacy requests yet. Reply 'support' and choose an option to create one."
+        lines = ["Your recent privacy requests:"]
+        for index, item in enumerate(items, start=1):
+            request_type = str(item.get("request_type") or "").replace("_", " ")
+            status = str(item.get("status") or "open")
+            created_at = item.get("created_at")
+            created_label = created_at.date().isoformat() if hasattr(created_at, "date") else ""
+            lines.append(f"{index}. {request_type} [{status}] ({created_label})")
+        lines.append("Reply 'support' for more options.")
+        return "\n".join(lines)
+
+    def _support_menu_prompt(self) -> str:
+        return (
+            "Support options:\n"
+            "1) see my feedback\n"
+            "2) delete my profile\n"
+            "3) export my data\n"
+            "4) see my privacy requests\n"
+            "Reply 1, 2, 3, or 4. Reply CANCEL to exit."
+        )
 
     def _handle_existing_user_invite_management(self, *, sender_phone: str, body: str, invite_target: dict) -> str | None:
         if self._is_patient_invite_list_trigger(body):
@@ -1509,6 +1716,7 @@ class OnboardingService:
                 [
                     "Try one of these:",
                     "- schedule",
+                    "- support",
                     "- team",
                     "- who handles medications",
                     "- note tired today",
@@ -1523,6 +1731,7 @@ class OnboardingService:
                 [
                     "Try one of these:",
                     "- schedule",
+                    "- support",
                     "- status",
                     "- remember I had a stent placed in February",
                     "- note slept 4 hours last night",

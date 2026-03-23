@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 
 from careos.app_context import context
+from careos.domain.enums.core import PersonaType, Role
+from careos.domain.models.api import ParticipantCreate, PatientCreate, TenantCreate
 from careos.main import app
 from careos.settings import settings
 
@@ -145,3 +147,94 @@ def test_onboarding_expired_session_restarts_from_role_prompt() -> None:
     assert "Previous onboarding session expired." in restarted
     assert "Welcome to CareOS." in restarted
     assert "Are you onboarding for:" in restarted
+
+
+def test_existing_user_support_menu_can_show_feedback_history() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="Support Family"))
+    participant = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=str(tenant["id"]),
+            role=Role.CAREGIVER,
+            display_name="Support User",
+            phone_number="whatsapp:+15556660010",
+        )
+    )
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="Support Patient",
+            timezone="UTC",
+            persona_type=PersonaType.CAREGIVER_MANAGED_ELDER,
+        )
+    )
+    context.store.link_caregiver(str(participant["id"]), str(patient["id"]))
+    context.store.create_participant_feedback(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        participant_id=str(participant["id"]),
+        source_channel="whatsapp",
+        feedback_type="feedback",
+        message="Need bigger reminder text",
+        structured_context={"source": "test"},
+    )
+    identity = context.identity_service.resolve_participant_by_phone("whatsapp:+15556660010")
+    assert identity is not None
+
+    menu = context.onboarding.maybe_handle_message(
+        sender_phone="whatsapp:+15556660010",
+        body="support",
+        identity=identity,
+        linked_patient_count=1,
+    )
+    assert "Support options:" in menu
+    assert "1) see my feedback" in menu
+
+    feedback = context.onboarding.maybe_handle_message(
+        sender_phone="whatsapp:+15556660010",
+        body="1",
+        identity=identity,
+        linked_patient_count=1,
+    )
+    assert "Your recent feedback:" in feedback
+    assert "Need bigger reminder text" in feedback
+
+
+def test_existing_user_support_menu_can_create_erasure_request() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="Deletion Family"))
+    participant = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=str(tenant["id"]),
+            role=Role.CAREGIVER,
+            display_name="Deletion User",
+            phone_number="whatsapp:+15556660011",
+        )
+    )
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="Deletion User",
+            timezone="UTC",
+            persona_type=PersonaType.CAREGIVER_MANAGED_ELDER,
+        )
+    )
+    context.store.link_caregiver(str(participant["id"]), str(patient["id"]))
+    identity = context.identity_service.resolve_participant_by_phone("whatsapp:+15556660011")
+    assert identity is not None
+
+    context.onboarding.maybe_handle_message(
+        sender_phone="whatsapp:+15556660011",
+        body="support",
+        identity=identity,
+        linked_patient_count=1,
+    )
+    deletion = context.onboarding.maybe_handle_message(
+        sender_phone="whatsapp:+15556660011",
+        body="2",
+        identity=identity,
+        linked_patient_count=1,
+    )
+
+    assert "I created a profile deletion request for review." in deletion
+    requests = context.store.list_privacy_requests(subject_participant_id=str(participant["id"]))
+    assert len(requests) == 1
+    assert requests[0]["request_type"] == "erasure"

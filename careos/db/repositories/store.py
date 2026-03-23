@@ -132,6 +132,8 @@ def _product_command_label(body: str) -> str:
     exact = {
         "?": "help",
         "help": "help",
+        "support": "support",
+        "privacy": "support",
         "schedule": "schedule",
         "today": "schedule",
         "status": "status",
@@ -660,6 +662,10 @@ class Store(ABC):
         message: str,
         structured_context: dict,
     ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_participant_feedback(self, *, participant_id: str, limit: int = 5) -> list[dict]:
         raise NotImplementedError
 
     @abstractmethod
@@ -2011,6 +2017,15 @@ class InMemoryStore(Store):
         }
         self.participant_feedback.append(row)
         return dict(row)
+
+    def list_participant_feedback(self, *, participant_id: str, limit: int = 5) -> list[dict]:
+        rows = [
+            dict(row)
+            for row in self.participant_feedback
+            if str(row.get("participant_id") or "") == str(participant_id)
+        ]
+        rows.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return rows[: max(int(limit), 1)]
 
     def log_product_telemetry_event(
         self,
@@ -4091,6 +4106,18 @@ class PostgresStore(Store):
                 ),
             )
             return _row_dict(cur, cur.fetchone())
+
+    def list_participant_feedback(self, *, participant_id: str, limit: int = 5) -> list[dict]:
+        sql = """
+        SELECT id, tenant_id, patient_id, participant_id, source_channel, feedback_type, message, structured_context, status, created_at
+        FROM participant_feedback
+        WHERE participant_id = %s
+        ORDER BY created_at DESC
+        LIMIT %s
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, (participant_id, max(int(limit), 1)))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
 
     def log_product_telemetry_event(
         self,
