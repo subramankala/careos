@@ -1,24 +1,29 @@
-# CareOS Lite (Multi-Tenant Pilot)
+# CareOS Lite
 
-Production-oriented, multi-tenant CareOS backend for WhatsApp + voice orchestration.
+Production-oriented CareOS backend for WhatsApp-first care coordination, grounded OpenClaw conversations, patient context, and care-team management.
 
 ## What this repo includes
 
-- FastAPI control plane (`Twilio -> FastAPI -> services -> Twilio`)
-- Multi-tenant identity resolution by inbound sender phone number
-- Postgres-first schema + SQL migration for tenant/patient/participant/care-plan/wins/messages/escalations
-- Deterministic command router (`schedule`, `next`, `status`, `done`, `delay`, `skip`, `help`)
-- Policy engine for criticality + flexibility + persona behavior
-- Idempotent outbound message event logging
-- Scheduler worker loop for due reminders + escalation checks
-- MCP server for authenticated agent tool-calling (`Agent/OpenClaw -> MCP -> FastAPI`)
-- Gateway app scaffold for external Twilio mediation (`Twilio -> Gateway -> CareOS`)
-- Tests for patient isolation across shared business number traffic
+- FastAPI API service for care plans, timelines, adherence, internal APIs, and MCP-backed operations
+- WhatsApp gateway for Twilio mediation, onboarding, deterministic commands, structured action planning, and OpenClaw-grounded conversations
+- Postgres-first schema and SQL migrations for identities, care plans, wins, message events, patient context, and care-team state
+- Deterministic WhatsApp flows for schedule/status/done/delay plus medication edit/delete
+- Patient context capture for:
+  - durable clinical facts with `remember`, `facts`, `forget`
+  - short-lived observations with `note`, `observations`
+  - day-scoped plans with `plan`, `plans`, `forget plan`
+- Care team management for:
+  - explicit team memberships
+  - category-level responsibility assignments
+  - WhatsApp commands `team`, `assign ...`, `who handles ...`
+- OpenClaw grounding with active medications, PRNs, patient context, and MCP tool hints
+- Scheduler worker and policy engine for due reminders and escalation checks
+- MCP server for authenticated agent tool-calling (`Agent/OpenClaw -> MCP -> CareOS API`)
 
 ## Quick start
 
 ```bash
-cd /Users/kumarmankala/code/Codex/Wellness-check/careos-lite
+cd /home/kumarmankala/careos
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
@@ -30,7 +35,7 @@ uvicorn careos.main:app --host 0.0.0.0 --port 8115 --reload
 Use the onboarding helper to create or update a patient from a support-plan JSON:
 
 ```bash
-cd /Users/kumarmankala/code/Codex/Wellness-check/careos-lite
+cd /home/kumarmankala/careos
 set -a; source .env; set +a
 python3 scripts/onboard_support_plan.py \
   --plan-json /absolute/path/to/patient_daily_support_plan.json \
@@ -69,6 +74,8 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0008_person_identity_and_mem
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0009_patient_clinical_facts.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0010_patient_observations.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0011_patient_day_plans.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0012_care_team_memberships.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0013_care_responsibility_assignments.sql
 ```
 3. Review and install systemd units:
 ```bash
@@ -113,7 +120,7 @@ sudo systemctl status careos-lite-scheduler --no-pager
 - `CAREOS_MCP_API_KEY` (required when exposing MCP)
 - `CAREOS_MCP_CAREOS_BASE_URL` (default `http://127.0.0.1:8115`)
 - `CAREOS_MCP_ALLOWED_WRITE_ROLES` (default `caregiver,patient,clinician,admin`)
-- Full template: [.env.example](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/.env.example)
+- Full template: [.env.example](/home/kumarmankala/careos/.env.example)
 
 ## Migration
 
@@ -131,7 +138,36 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0008_person_identity_and_mem
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0009_patient_clinical_facts.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0010_patient_observations.sql
 psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0011_patient_day_plans.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0012_care_team_memberships.sql
+psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0013_care_responsibility_assignments.sql
 ```
+
+## Current product surface
+
+WhatsApp currently supports:
+
+- operational commands such as `schedule`, `status`, `done`, `delay`, `skip`, `patients`, `switch`, and `whoami`
+- medication edit/delete flows from the schedule menu
+- patient-context capture:
+  - `remember <key>: <fact>` or `remember <fact>`
+  - `facts`
+  - `forget <key|number>`
+  - `note <observation>`
+  - `observations`
+  - `plan <day-scoped plan>`
+  - `plans`
+  - `forget plan <key|number>`
+- care-team commands:
+  - `team`
+  - `assign <category> to <number> as responsible|informed`
+  - `who handles <category>`
+- non-operational questions routed through OpenClaw with grounding from:
+  - active medication list
+  - PRN medications
+  - durable clinical facts
+  - short-lived observations
+  - day-scoped plans
+  - care-team context when relevant
 
 ## Core endpoints
 
@@ -165,6 +201,22 @@ WhatsApp command additions for multi-patient caregiver flow:
 - `switch`
 - `use <n|patient_id>`
 - `whoami` (now reports active context status)
+
+Patient-context commands:
+- `remember <key>: <fact>`
+- `remember <fact>`
+- `facts`
+- `forget <key|number>`
+- `note <observation>`
+- `observations`
+- `plan <day-scoped plan>`
+- `plans`
+- `forget plan <key|number>`
+
+Care-team commands:
+- `team`
+- `assign <category> to <number> as responsible|informed`
+- `who handles <category>`
 
 Plain-English fallback mode:
 - Keep deterministic commands as primary path.
@@ -218,20 +270,27 @@ WhatsApp onboarding (unknown/incomplete sender):
 
 ## Architecture doc
 
-See [ARCHITECTURE.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/ARCHITECTURE.md).
+See [ARCHITECTURE.md](/home/kumarmankala/careos/ARCHITECTURE.md).
 Implemented behavior reference:
-[IMPLEMENTED_SPEC.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/IMPLEMENTED_SPEC.md)
+[IMPLEMENTED_SPEC.md](/home/kumarmankala/careos/IMPLEMENTED_SPEC.md)
 
 ## Operations runbook
 
 Reusable onboarding and cleanup commands:
-[OPERATIONS_RUNBOOK.md](/Users/kumarmankala/code/Codex/Wellness-check/careos-lite/OPERATIONS_RUNBOOK.md)
+[OPERATIONS_RUNBOOK.md](/home/kumarmankala/careos/OPERATIONS_RUNBOOK.md)
 
 Product and engineering backlog:
-[BACKLOG.md](BACKLOG.md)
+[BACKLOG.md](/home/kumarmankala/careos/BACKLOG.md)
 
 Lightweight implementation process:
-[IMPLEMENTATION_PIPELINE.md](IMPLEMENTATION_PIPELINE.md)
+[IMPLEMENTATION_PIPELINE.md](/home/kumarmankala/careos/IMPLEMENTATION_PIPELINE.md)
+
+Additional design docs:
+- [CARE_TEAM_DESIGN.md](/home/kumarmankala/careos/CARE_TEAM_DESIGN.md)
+- [CARE_TEAM_PHASE1_PLAN.md](/home/kumarmankala/careos/CARE_TEAM_PHASE1_PLAN.md)
+- [SOVEREIGN_AGENT_ARCHITECTURE.md](/home/kumarmankala/careos/SOVEREIGN_AGENT_ARCHITECTURE.md)
+- [SOVEREIGN_AGENT_PHASED_PLAN.md](/home/kumarmankala/careos/SOVEREIGN_AGENT_PHASED_PLAN.md)
+- [SOVEREIGN_AGENT_UX_MANUAL.md](/home/kumarmankala/careos/SOVEREIGN_AGENT_UX_MANUAL.md)
 
 DB reset helper:
 - `scripts/reset_db.sh` (safe review mode by default; use `--apply` to execute)

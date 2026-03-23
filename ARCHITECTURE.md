@@ -9,7 +9,7 @@ flowchart TD
     GW --> ID[IdentityService<br/>active patient context]
     GW --> ONB[OnboardingService<br/>role + setup wizard]
     GW --> PLAN[Action Planner<br/>structured creates/updates]
-    GW --> DET[Deterministic Intent Layer<br/>schedule/status/done/delay/edit/delete]
+    GW --> DET[Deterministic Intent Layer<br/>schedule/status/done/delay/edit/delete/context/team]
     GW --> DASH[Care-Dash Link Generator]
     GW --> OCL[OpenClawConversationEngine]
 
@@ -20,12 +20,14 @@ flowchart TD
     GW --> API[careos-lite-api]
     API --> WIN[WinService]
     API --> EDIT[CarePlanEditService]
-    API --> PCTX[PatientContextService<br/>durable clinical facts]
+    API --> PCTX[PatientContextService<br/>facts + observations + day plans]
+    API --> TEAM[CareTeamService<br/>memberships + assignments]
     API --> PERS[PersonalizationService]
 
     WIN --> DB[(Postgres)]
     EDIT --> DB
     PCTX --> DB
+    TEAM --> DB
     PERS --> DB
     API --> DB
     GW --> DB
@@ -48,7 +50,8 @@ flowchart TD
    - done/skip/delay
    - medication edit/delete
    - caregiver dashboard link requests
-   - explicit durable-fact commands like `remember ...`, `facts`, and `forget ...`
+   - patient-context commands like `remember`, `facts`, `forget`, `note`, `observations`, `plan`, `plans`, and `forget plan`
+   - care-team commands like `team`, `assign ...`, and `who handles ...`
 4. Structured action requests flow through the planner for create/update/complete operations with confirmation.
 5. Non-operational questions fall through to `OpenClawConversationEngine`.
 6. OpenClaw is grounded with:
@@ -56,26 +59,60 @@ flowchart TD
    - PRN medications
    - medication-purpose hints
    - durable clinical facts
+   - short-lived observations
+   - day-scoped plans
+   - care-team context when relevant
    - MCP tool hints such as `careos_get_clinical_facts`, `careos_get_medications`, `careos_get_today`, and `careos_get_status`
 7. The gateway returns a TwiML message response to Twilio.
 
-## Durable Clinical Facts
+## Patient Context
 
-Durable clinical facts are stored separately from day-scoped personalization rules.
+Patient context is stored separately from short-lived personalization rules.
 
-- Persistence: `patient_clinical_facts`
+- Persistence:
+  - `patient_clinical_facts`
+  - `patient_observations`
+  - `patient_day_plans`
 - Service: `PatientContextService`
 - Internal API:
   - `POST /internal/patient-context/clinical-facts`
   - `GET /internal/patient-context/clinical-facts/active`
   - `DELETE /internal/patient-context/clinical-facts`
+  - `POST /internal/patient-context/observations`
+  - `GET /internal/patient-context/observations/active`
+  - `POST /internal/patient-context/day-plans`
+  - `GET /internal/patient-context/day-plans/active`
+  - `DELETE /internal/patient-context/day-plans`
 - WhatsApp commands:
-  - `remember <key>: <fact>`
-  - `remember <fact>`
-  - `facts`
-  - `forget <key|number>`
+  - durable facts: `remember ...`, `facts`, `forget ...`
+  - short-lived observations: `note ...`, `observations`
+  - day-scoped plans: `plan ...`, `plans`, `forget plan ...`
 
-These facts are intended for stable patient context such as medical history, procedures, chronic conditions, and other durable facts that should shape later OpenClaw answers.
+These context types serve different roles:
+
+- durable clinical facts capture stable history such as procedures, chronic conditions, or other long-lived context that should shape later answers
+- short-lived observations capture recent state such as sleep, symptoms, or same-day measurements with expiry semantics
+- day-scoped plans capture practical context for the current or upcoming day, such as outings or appointments, with day-bounded relevance
+
+## Care Team
+
+Care team state is now explicit rather than being only an implicit caregiver-link model.
+
+- Persistence:
+  - `care_team_memberships`
+  - `care_responsibility_assignments`
+- Service: `CareTeamService`
+- Internal API:
+  - membership create/list/update/deactivate
+  - sync memberships from existing caregiver links
+  - assignment create/list/delete
+  - team summary with assignments
+- WhatsApp commands:
+  - `team`
+  - `assign <category> to <number> as responsible|informed`
+  - `who handles <category>`
+
+Current scope is category-level ownership visibility and management. Scheduler reminder routing is not yet assignment-aware.
 
 ## Box Glossary
 
@@ -91,7 +128,8 @@ This is the conversation-facing ingress service for WhatsApp at `POST /gateway/t
 - selecting the active patient context
 - handling onboarding/setup shortcuts
 - recognizing operational commands
-- handling explicit durable-fact commands like `remember`, `facts`, and `forget`
+- handling patient-context commands like `remember`, `note`, `plan`, `facts`, `observations`, and `forget`
+- handling care-team commands like `team`, `assign`, and `who handles`
 - deciding whether a message should be handled deterministically or sent to OpenClaw
 
 It is effectively the traffic director for inbound chat.
@@ -117,7 +155,8 @@ This is the rule-driven operational command layer. It handles known, bounded act
 - `done`, `skip`, `delay`
 - medication edit/delete flows
 - dashboard-link intents
-- durable-fact chat commands
+- patient-context chat commands
+- care-team chat commands
 
 This layer exists so high-confidence operational actions do not depend on LLM behavior.
 
@@ -133,6 +172,9 @@ This is the gateway-side adapter that prepares non-operational questions for the
 - PRN medications
 - medication-purpose hints
 - durable clinical facts
+- short-lived observations
+- day-scoped plans
+- care-team context when relevant
 - tool hints for MCP-backed reads
 
 It is also where fallback and retry behavior around OpenClaw HTTP calls is handled.
@@ -153,6 +195,8 @@ This is the main FastAPI backend. It exposes:
 - care-plan editing APIs
 - internal APIs used by the gateway and MCP
 - patient-context APIs for durable clinical facts
+- patient-context APIs for observations and day plans
+- care-team membership and assignment APIs
 - dashboard data endpoints
 
 It is the primary application service layer behind the gateway.
@@ -185,9 +229,24 @@ This service is what keeps edits consistent instead of letting raw database upda
 
 ### `PatientContextService`
 
-This service manages durable patient facts that should influence later advisory answers. It is separate from reminders and separate from short-lived personalization rules. Examples include prior procedures, chronic conditions, or stable patient facts that should be visible to OpenClaw on later turns.
+This service manages patient context that should influence later advisory answers and planning behavior. It currently includes:
 
-Its purpose is to give the system a persistent context layer that is more structured and durable than raw chat history.
+- durable clinical facts
+- short-lived observations
+- day-scoped plans
+
+It is separate from reminders and separate from personalization rules that directly alter reminder mediation policy. Its purpose is to give the system a structured, expiring context layer that is more reliable than raw chat history.
+
+### `CareTeamService`
+
+This service manages explicit patient-scoped care team structure. It currently handles:
+
+- care-team memberships
+- category-level responsibility assignments
+- compatibility sync from existing caregiver links
+- team summary reads used by internal APIs and WhatsApp commands
+
+This is the foundation for more advanced routing and authorization work, but today it is mainly the source of truth for visible team membership and category ownership.
 
 ### `PersonalizationService`
 
@@ -202,7 +261,8 @@ Postgres is the system of record for the application. It stores:
 - onboarding and caregiver verification state
 - message events
 - personalization rules
-- durable clinical facts
+- patient clinical facts, observations, and day plans
+- care-team memberships and responsibility assignments
 - change/version history
 
 Most of the other boxes are services that read from or write to this database through controlled abstractions.
@@ -232,6 +292,11 @@ This is the caregiver dashboard UI. It is the richer visual surface for patient 
 3. `MessageOrchestrator` emits outbound reminder/escalation messages.
 4. Outbound events are logged idempotently in `message_events`.
 
+Current boundary:
+
+- reminders and escalations are not yet routed by care-team responsibility assignments
+- care-team assignments currently affect visibility and explicit ownership answers, not outbound routing
+
 ## Storage Model
 
 Postgres is the source of truth for:
@@ -240,7 +305,8 @@ Postgres is the source of truth for:
 - care plans, win definitions, win instances, and care-plan deltas
 - onboarding sessions and caregiver verification requests
 - personalization rules and mediation decisions
-- durable clinical facts
+- durable clinical facts, observations, and day plans
+- care-team memberships and responsibility assignments
 - message events and reminder context
 
 ## Runtime Components
@@ -262,6 +328,6 @@ Postgres is the source of truth for:
 
 ## Known Gaps
 
-- durable facts currently support explicit capture via WhatsApp commands, not freeform extraction from arbitrary conversational turns
-- durable facts are grounded for OpenClaw responses, but dashboard editing/inspection surfaces are still minimal
-- long-term patient-context types beyond durable facts, such as short-lived observations and today-scoped plans, are still backlog work
+- patient context currently uses explicit WhatsApp commands rather than broad freeform extraction from arbitrary conversational turns
+- care-team assignments are visible and manageable, but scheduler reminder routing and edit authority are not yet assignment-aware
+- dashboard editing and inspection surfaces for patient context and care-team state are still thinner than the WhatsApp/internal API paths
