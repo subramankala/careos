@@ -16,6 +16,25 @@ from urllib.request import Request, urlopen
 
 
 SESSION_PATH = Path.home() / ".careos-admin" / "session.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_PATH = REPO_ROOT / ".env"
+
+
+def _load_dotenv() -> None:
+    if not DEFAULT_ENV_PATH.exists():
+        return
+    for raw_line in DEFAULT_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
 
 
 def _api_base() -> str:
@@ -278,6 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _load_dotenv()
     parser = _build_parser()
     args = parser.parse_args()
     try:
