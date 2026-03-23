@@ -175,7 +175,7 @@ class OnboardingService:
                     )
                 if self._is_existing_user_onboarding_trigger(body):
                     self._save_session(sender_phone, state="choose_role", status="active", data={"existing_user": True})
-                    return "You already have caregiver access. " + self._role_prompt()
+                    return "You already have caregiver access.\n" + self._role_prompt()
                 return None
 
         if identity is not None and linked_patient_count == 0:
@@ -199,7 +199,7 @@ class OnboardingService:
 
         if session is None or session.status != "active":
             self._save_session(sender_phone, state="choose_role", status="active", data={})
-            prefix = "Previous onboarding session expired. " if expired else "Welcome to CareOS Lite onboarding. "
+            prefix = "Previous onboarding session expired.\n" if expired else ""
             return prefix + self._role_prompt()
 
         text = body.strip()
@@ -231,7 +231,7 @@ class OnboardingService:
                 patient_id=created["patient_id"],
                 source="self_onboarding_complete",
             )
-            return f"Done. Profile created for {patient_name}.\n{self._setup_menu_prompt()}"
+            return f"Done. Profile created for {patient_name}.\n{self._setup_menu_prompt(source='self_onboarding_complete')}"
 
         if session.state == "caregiver_name":
             if not text:
@@ -333,7 +333,7 @@ class OnboardingService:
             )
 
         if session.state in {"completed", "verification_failed"}:
-            return "Onboarding already completed. Reply 'schedule' or 'help'."
+            return "Onboarding already completed. Reply 'schedule', 'help', or ask a care question."
 
         self._save_session(sender_phone, state="choose_role", status="active", data={})
         return self._role_prompt()
@@ -357,7 +357,7 @@ class OnboardingService:
             session_data.pop("setup_type", None)
             session_data.pop("setup_draft", None)
             self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-            return self._setup_menu_prompt()
+            return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
         if normalized in {"finish", "finish for now", "4"} and session_data.get("setup_state", "menu") == "menu":
             self._save_session(
@@ -367,14 +367,14 @@ class OnboardingService:
                 data=session_data,
                 completion_note="setup_finished",
             )
-            return "Setup saved. You can now use: schedule, next, status."
+            return self._post_setup_success_prompt(source=str(session_data.get("setup_source") or ""))
 
         setup_state = str(session_data.get("setup_state") or "menu")
         draft = dict(session_data.get("setup_draft") or {})
 
         if setup_state == "menu":
             if normalized in {"menu", "0"}:
-                return self._setup_menu_prompt()
+                return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
             if normalized in {"1", "add medications", "medication", "medications"}:
                 session_data["setup_type"] = "medication"
                 session_data["setup_state"] = "med_name"
@@ -393,7 +393,7 @@ class OnboardingService:
                 session_data["setup_draft"] = {}
                 self._save_session(sender_phone, state="setup_wizard", status="active", data=session_data)
                 return "Routine category: 1) meal 2) movement 3) sleep 4) therapy"
-            return self._setup_menu_prompt()
+            return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
         if session_data.get("setup_type") == "medication":
             return self._handle_medication_setup(sender_phone, text, normalized, identity, session_data, draft)
@@ -406,7 +406,7 @@ class OnboardingService:
         session_data.pop("setup_type", None)
         session_data.pop("setup_draft", None)
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-        return self._setup_menu_prompt()
+        return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
     def _handle_existing_user_invite_management(self, *, sender_phone: str, body: str, invite_target: dict) -> str | None:
         if self._is_patient_invite_list_trigger(body):
@@ -465,11 +465,11 @@ class OnboardingService:
             session_data.pop("setup_type", None)
             session_data.pop("setup_draft", None)
             self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-            return f"{result}\n{self._setup_menu_prompt()}"
+            return f"{result}\n{self._setup_menu_prompt(source=str(session_data.get('setup_source') or ''))}"
 
         session_data["setup_state"] = "menu"
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-        return self._setup_menu_prompt()
+        return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
     def _handle_appointment_setup(
         self,
@@ -512,11 +512,11 @@ class OnboardingService:
             session_data.pop("setup_type", None)
             session_data.pop("setup_draft", None)
             self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-            return f"{result}\n{self._setup_menu_prompt()}"
+            return f"{result}\n{self._setup_menu_prompt(source=str(session_data.get('setup_source') or ''))}"
 
         session_data["setup_state"] = "menu"
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-        return self._setup_menu_prompt()
+        return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
     def _handle_routine_setup(
         self,
@@ -569,11 +569,11 @@ class OnboardingService:
             session_data.pop("setup_type", None)
             session_data.pop("setup_draft", None)
             self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-            return f"{result}\n{self._setup_menu_prompt()}"
+            return f"{result}\n{self._setup_menu_prompt(source=str(session_data.get('setup_source') or ''))}"
 
         session_data["setup_state"] = "menu"
         self._save_session(sender_phone, state="setup_menu", status="active", data=session_data)
-        return self._setup_menu_prompt()
+        return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
     def _create_medication_item(self, identity: ParticipantIdentity, session_data: dict, draft: dict) -> str:
         patient_id, participant_id = self._resolve_setup_target(identity, session_data)
@@ -783,7 +783,7 @@ class OnboardingService:
             if patient_requests:
                 caregiver_msg = (
                     f"Approved by {chosen.patient_name}. Caregiver access is now active.\n"
-                    + self._setup_menu_prompt()
+                    + self._setup_menu_prompt(source="verification_approved")
                 )
                 self._send_whatsapp_by_phone(chosen.caregiver_phone_number, caregiver_msg)
                 return "Approved. Caregiver has been informed."
@@ -795,7 +795,10 @@ class OnboardingService:
                     f"as {caregiver_preset.replace('_', ' ')}."
                 ),
             )
-            return f"Approved. Caregiver access for {chosen.patient_name} is now active.\n{self._setup_menu_prompt()}"
+            return (
+                f"Approved. Caregiver access for {chosen.patient_name} is now active.\n"
+                f"{self._setup_menu_prompt(source='verification_approved')}"
+            )
 
         self.store.update_verification_request(
             chosen.id,
@@ -1279,15 +1282,32 @@ class OnboardingService:
     def _approval_code(self) -> str:
         return uuid4().hex[:6].upper()
 
-    def _setup_menu_prompt(self) -> str:
+    def _setup_menu_prompt(self, source: str = "") -> str:
+        intro = "You're set up."
+        normalized = str(source).strip().lower()
+        if normalized == "self_onboarding_complete":
+            intro = "You're set up for your own care."
+        elif normalized == "verification_approved":
+            intro = "You're set up as a caregiver."
         return (
+            f"{intro}\n"
             "Care setup menu:\n"
             "1) add medications\n"
             "2) add appointments\n"
             "3) add routines\n"
             "4) finish for now\n"
-            "Reply 1-4"
+            "Reply 1-4\n"
+            f"{self._post_setup_hint(source=source)}"
         )
+
+    def _post_setup_hint(self, source: str = "") -> str:
+        normalized = str(source).strip().lower()
+        if normalized == "verification_approved":
+            return "Or reply SCHEDULE, TEAM, or ask a question like: what should I pay attention to today?"
+        return "Or reply SCHEDULE, STATUS, or ask a question like: which medicines are most important for me not to miss?"
+
+    def _post_setup_success_prompt(self, source: str = "") -> str:
+        return f"Setup saved.\n{self._post_setup_hint(source=source)}"
 
     def _caregiver_waiting_prompt(self, request: CaregiverVerificationRequest) -> str:
         return (
@@ -1316,10 +1336,12 @@ class OnboardingService:
 
     def _role_prompt(self) -> str:
         return (
+            "Welcome to CareOS.\n"
+            "I can help with care schedules, medications, reminders, and care questions.\n\n"
             "Are you onboarding for:\n"
             "1) myself\n"
             "2) someone I care for\n"
-            "Reply: myself or someone I care for"
+            "Reply 1 or 2"
         )
 
     def _normalize_phone_input(self, raw_phone: str) -> str | None:

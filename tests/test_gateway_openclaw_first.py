@@ -399,16 +399,39 @@ class _FakeOnboardingService:
     def maybe_handle_message(self, *, sender_phone: str, body: str, identity, linked_patient_count: int):  # noqa: ANN001
         normalized = body.strip().lower()
         if identity is None and body.strip().lower() == "hi":
-            return "Welcome to CareOS Lite onboarding. Are you: 1) myself 2) someone I care for"
+            return (
+                "Welcome to CareOS.\n"
+                "I can help with care schedules, medications, reminders, and care questions.\n\n"
+                "Are you onboarding for:\n"
+                "1) myself\n"
+                "2) someone I care for\n"
+                "Reply 1 or 2"
+            )
         if identity is not None and linked_patient_count > 0 and normalized == "register me as patient":
             self.onboarding_active = True
-            return "You already have caregiver access. Are you onboarding for:\n1) myself\n2) someone I care for\nReply: myself or someone I care for"
+            return (
+                "You already have caregiver access.\n"
+                "Welcome to CareOS.\n"
+                "I can help with care schedules, medications, reminders, and care questions.\n\n"
+                "Are you onboarding for:\n"
+                "1) myself\n"
+                "2) someone I care for\n"
+                "Reply 1 or 2"
+            )
         if identity is not None and linked_patient_count > 0 and self.onboarding_active:
             if normalized in {"cancel onboarding", "exit onboarding", "stop onboarding"}:
                 self.onboarding_active = False
                 return "Okay, I closed onboarding. Reply 'help' for commands."
             if normalized in {"restart onboarding", "start onboarding again"}:
-                return "Restarting onboarding.\nAre you onboarding for:\n1) myself\n2) someone I care for\nReply: myself or someone I care for"
+                return (
+                    "Restarting onboarding.\n"
+                    "Welcome to CareOS.\n"
+                    "I can help with care schedules, medications, reminders, and care questions.\n\n"
+                    "Are you onboarding for:\n"
+                    "1) myself\n"
+                    "2) someone I care for\n"
+                    "Reply 1 or 2"
+                )
         if self.setup_active:
             if normalized in {"cancel setup", "cancel wizard"}:
                 self.setup_active = False
@@ -1950,7 +1973,7 @@ def test_gateway_restores_onboarding_entry(monkeypatch) -> None:
             }
         )
         assert response.status_code == 200
-        assert b"Welcome to CareOS Lite onboarding." in response.body
+        assert b"Welcome to CareOS." in response.body
     finally:
         monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
         settings.gateway_conversation_mode = previous_mode

@@ -28,6 +28,7 @@ def _self_onboard_until_setup(phone: str) -> None:
     _twilio(phone, "hi", f"{phone}-s1")
     _twilio(phone, "myself", f"{phone}-s2")
     done = _twilio(phone, "Indira Setup", f"{phone}-s3")
+    assert "You're set up for your own care." in done
     assert "Care setup menu:" in done
 
 
@@ -89,9 +90,11 @@ def test_caregiver_approval_continues_into_setup_menu() -> None:
 
     approved = _twilio(patient_phone, f"APPROVE {code}", "SM-cg-8")
     assert "Approved" in approved
+    assert "You're set up as a caregiver." in approved
 
     menu = _twilio(caregiver_phone, "menu", "SM-cg-9")
     assert "Care setup menu:" in menu
+    assert "TEAM" in menu
 
 
 def test_setup_menu_restart_and_cancel_commands_work_mid_wizard() -> None:

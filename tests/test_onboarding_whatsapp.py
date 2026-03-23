@@ -31,6 +31,7 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
     sender = "whatsapp:+15556660001"
 
     first = _twilio(sender, "hi", "SM_onboard_self_1")
+    assert "Welcome to CareOS." in first
     assert "Are you onboarding for:" in first
 
     second = _twilio(sender, "myself", "SM_onboard_self_2")
@@ -38,10 +39,12 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
 
     third = _twilio(sender, "Indira Devi", "SM_onboard_self_3")
     assert "Done. Profile created for Indira Devi." in third
+    assert "You're set up for your own care." in third
     assert "Care setup menu:" in third
 
     finish = _twilio(sender, "4", "SM_onboard_self_4")
     assert "Setup saved." in finish
+    assert "SCHEDULE" in finish
 
     schedule = _twilio(sender, "schedule", "SM_onboard_self_5")
     assert "No wins are scheduled for today." in schedule
@@ -87,6 +90,7 @@ def test_incomplete_user_enters_onboarding_and_resume_state() -> None:
     )
 
     first = _twilio("whatsapp:+15556660003", "schedule", "SM_onboard_inc_1")
+    assert "Welcome to CareOS." in first
     assert "Are you onboarding for:" in first
 
     second = _twilio("whatsapp:+15556660003", "myself", "SM_onboard_inc_2")
@@ -117,4 +121,5 @@ def test_onboarding_expired_session_restarts_from_role_prompt() -> None:
 
     restarted = _twilio(sender, "anything", "SM_onboard_exp_3")
     assert "Previous onboarding session expired." in restarted
+    assert "Welcome to CareOS." in restarted
     assert "Are you onboarding for:" in restarted
