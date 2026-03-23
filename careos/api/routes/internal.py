@@ -119,6 +119,15 @@ class CareResponsibilityAssignmentCreateRequest(BaseModel):
     responsibility_role: str = "responsible"
 
 
+class PrivacyRequestCreateRequest(BaseModel):
+    request_type: str
+    subject_participant_id: str
+    requested_by_participant_id: str | None = None
+    jurisdiction: str = ""
+    reason: str = ""
+    structured_context: dict = Field(default_factory=dict)
+
+
 def _criticality_enum_for_dashboard(*, category: str, criticality: str, flexibility: str) -> str:
     category_normalized = str(category).strip().lower()
     criticality_normalized = str(criticality).strip().lower()
@@ -617,6 +626,32 @@ def dashboard_recent_events(patient_id: str = Query(...), limit: int = Query(def
 @router.get("/internal/product-metrics/overview")
 def product_metrics_overview(days: int = Query(default=7), patient_id: str | None = Query(default=None)) -> dict:
     return context.store.get_product_metrics_overview(days=max(days, 1), patient_id=patient_id)
+
+
+@router.post("/internal/privacy/requests")
+def create_privacy_request(payload: PrivacyRequestCreateRequest) -> dict:
+    return context.store.create_privacy_request(
+        request_type=payload.request_type,
+        subject_participant_id=payload.subject_participant_id,
+        requested_by_participant_id=payload.requested_by_participant_id,
+        jurisdiction=payload.jurisdiction,
+        reason=payload.reason,
+        structured_context=payload.structured_context,
+    )
+
+
+@router.get("/internal/privacy/requests")
+def list_privacy_requests(subject_participant_id: str | None = Query(default=None)) -> dict:
+    return {"items": context.store.list_privacy_requests(subject_participant_id=subject_participant_id)}
+
+
+@router.get("/internal/privacy/export")
+def export_subject_data(subject_participant_id: str = Query(...)) -> dict:
+    try:
+        bundle = context.store.export_subject_data(subject_participant_id=subject_participant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"bundle": bundle}
 
 
 @router.get("/internal/dashboard/task-criticality")

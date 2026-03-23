@@ -683,6 +683,27 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def create_privacy_request(
+        self,
+        *,
+        request_type: str,
+        subject_participant_id: str,
+        requested_by_participant_id: str | None = None,
+        jurisdiction: str = "",
+        reason: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_privacy_requests(self, *, subject_participant_id: str | None = None) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def export_subject_data(self, *, subject_participant_id: str) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
     def create_personalization_rule(
         self,
         *,
@@ -837,6 +858,7 @@ class InMemoryStore(Store):
         self.message_events: list[dict] = []
         self.participant_feedback: list[dict] = []
         self.product_telemetry_events: list[dict] = []
+        self.privacy_requests: list[dict] = []
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -2077,6 +2099,101 @@ class InMemoryStore(Store):
             now=now,
             since=since,
         )
+
+    def create_privacy_request(
+        self,
+        *,
+        request_type: str,
+        subject_participant_id: str,
+        requested_by_participant_id: str | None = None,
+        jurisdiction: str = "",
+        reason: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        row = {
+            "id": str(uuid4()),
+            "request_type": str(request_type).strip().lower(),
+            "subject_participant_id": str(subject_participant_id),
+            "requested_by_participant_id": str(requested_by_participant_id or subject_participant_id),
+            "jurisdiction": str(jurisdiction).strip().upper(),
+            "reason": str(reason),
+            "structured_context": dict(structured_context or {}),
+            "status": "open",
+            "created_at": datetime.now(UTC),
+        }
+        self.privacy_requests.append(row)
+        return dict(row)
+
+    def list_privacy_requests(self, *, subject_participant_id: str | None = None) -> list[dict]:
+        rows = [dict(row) for row in self.privacy_requests]
+        if subject_participant_id is not None:
+            rows = [row for row in rows if str(row.get("subject_participant_id") or "") == str(subject_participant_id)]
+        rows.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return rows
+
+    def export_subject_data(self, *, subject_participant_id: str) -> dict:
+        participant = self.get_participant_record(subject_participant_id)
+        if participant is None:
+            raise ValueError("participant not found")
+        linked_patients = self.list_linked_patients(subject_participant_id)
+        patient_ids = {patient.patient_id for patient in linked_patients}
+        care_plans = [
+            dict(row)
+            for row in self.care_plans.values()
+            if str(row.get("patient_id") or "") in patient_ids
+        ]
+        care_plan_ids = {str(row.get("id") or "") for row in care_plans}
+        win_definitions = [
+            dict(row)
+            for row in self.win_definitions.values()
+            if str(row.get("care_plan_id") or "") in care_plan_ids
+        ]
+        win_definition_ids = {str(row.get("id") or "") for row in win_definitions}
+        win_instances = [
+            dict(row)
+            for row in self.win_instances.values()
+            if str(row.get("patient_id") or "") in patient_ids or str(row.get("win_definition_id") or "") in win_definition_ids
+        ]
+        return {
+            "participant": participant,
+            "linked_patients": [patient.model_dump() for patient in linked_patients],
+            "caregiver_links": [
+                dict(link)
+                for link in self.links
+                if str(link.get("caregiver_participant_id") or "") == str(subject_participant_id)
+                or str(link.get("patient_id") or "") in patient_ids
+            ],
+            "message_events": [
+                dict(row)
+                for row in self.message_events
+                if str(row.get("participant_id") or "") == str(subject_participant_id)
+                or str(row.get("patient_id") or "") in patient_ids
+            ],
+            "participant_feedback": [
+                dict(row)
+                for row in self.participant_feedback
+                if str(row.get("participant_id") or "") == str(subject_participant_id)
+                or str(row.get("patient_id") or "") in patient_ids
+            ],
+            "onboarding_sessions": [
+                dict(row)
+                for row in self.onboarding_sessions.values()
+                if _normalize_phone(str(row.get("phone_number") or "")) == _normalize_phone(str(participant.get("phone_number") or ""))
+            ],
+            "care_plans": care_plans,
+            "win_definitions": win_definitions,
+            "win_instances": win_instances,
+            "patient_clinical_facts": [
+                dict(row) for row in self.patient_clinical_facts.values() if str(row.get("patient_id") or "") in patient_ids
+            ],
+            "patient_observations": [
+                dict(row) for row in self.patient_observations.values() if str(row.get("patient_id") or "") in patient_ids
+            ],
+            "patient_day_plans": [
+                dict(row) for row in self.patient_day_plans.values() if str(row.get("patient_id") or "") in patient_ids
+            ],
+            "privacy_requests": self.list_privacy_requests(subject_participant_id=subject_participant_id),
+        }
 
     def create_personalization_rule(
         self,
@@ -4087,6 +4204,207 @@ class PostgresStore(Store):
             now=now,
             since=since,
         )
+
+    def create_privacy_request(
+        self,
+        *,
+        request_type: str,
+        subject_participant_id: str,
+        requested_by_participant_id: str | None = None,
+        jurisdiction: str = "",
+        reason: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        sql = """
+        INSERT INTO privacy_requests
+        (request_type, subject_participant_id, requested_by_participant_id, jurisdiction, reason, structured_context, status)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'open')
+        RETURNING id, request_type, subject_participant_id, requested_by_participant_id, jurisdiction, reason, structured_context, status, created_at, resolved_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    str(request_type).strip().lower(),
+                    subject_participant_id,
+                    requested_by_participant_id or subject_participant_id,
+                    str(jurisdiction).strip().upper(),
+                    reason,
+                    json.dumps(structured_context or {}),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def list_privacy_requests(self, *, subject_participant_id: str | None = None) -> list[dict]:
+        sql = """
+        SELECT id, request_type, subject_participant_id, requested_by_participant_id, jurisdiction, reason,
+               structured_context, status, created_at, resolved_at
+        FROM privacy_requests
+        """
+        params: list[object] = []
+        if subject_participant_id is not None:
+            sql += " WHERE subject_participant_id = %s"
+            params.append(subject_participant_id)
+        sql += " ORDER BY created_at DESC"
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return [_row_dict(cur, row) for row in cur.fetchall()]
+
+    def export_subject_data(self, *, subject_participant_id: str) -> dict:
+        participant_sql = """
+        SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active, created_at
+        FROM participants
+        WHERE id = %s
+        LIMIT 1
+        """
+        linked_patients_sql = """
+        SELECT DISTINCT pa.id AS patient_id, pa.display_name, pa.timezone, pa.tenant_id
+        FROM caregiver_patient_links cpl
+        JOIN patients pa ON pa.id = cpl.patient_id
+        WHERE cpl.caregiver_participant_id = %s
+        ORDER BY pa.display_name ASC
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(participant_sql, (subject_participant_id,))
+            participant_row = cur.fetchone()
+            if participant_row is None:
+                raise ValueError("participant not found")
+            participant = _row_dict(cur, participant_row)
+
+            cur.execute(linked_patients_sql, (subject_participant_id,))
+            linked_patients = [_row_dict(cur, row) for row in cur.fetchall()]
+            patient_ids = [str(row.get("patient_id") or "") for row in linked_patients if row.get("patient_id")]
+
+            caregiver_links: list[dict] = []
+            message_events: list[dict] = []
+            participant_feedback: list[dict] = []
+            care_plans: list[dict] = []
+            win_definitions: list[dict] = []
+            win_instances: list[dict] = []
+            patient_clinical_facts: list[dict] = []
+            patient_observations: list[dict] = []
+            patient_day_plans: list[dict] = []
+
+            if patient_ids:
+                placeholders = ", ".join(["%s"] * len(patient_ids))
+                cur.execute(
+                    f"""
+                    SELECT id, caregiver_participant_id, patient_id, relationship, notification_policy, can_edit_plan, created_at
+                    FROM caregiver_patient_links
+                    WHERE caregiver_participant_id = %s OR patient_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple([subject_participant_id, *patient_ids]),
+                )
+                caregiver_links = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT id, tenant_id, patient_id, participant_id, direction, channel, message_type, body, structured_payload, correlation_id, idempotency_key, created_at
+                    FROM message_events
+                    WHERE participant_id = %s OR patient_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple([subject_participant_id, *patient_ids]),
+                )
+                message_events = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT id, tenant_id, patient_id, participant_id, source_channel, feedback_type, message, structured_context, status, created_at
+                    FROM participant_feedback
+                    WHERE participant_id = %s OR patient_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple([subject_participant_id, *patient_ids]),
+                )
+                participant_feedback = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT id, patient_id, created_by_participant_id, status, version, effective_start, effective_end, source_type, created_at, updated_at
+                    FROM care_plans
+                    WHERE patient_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple(patient_ids),
+                )
+                care_plans = [_row_dict(cur, row) for row in cur.fetchall()]
+                care_plan_ids = [str(row.get("id") or "") for row in care_plans if row.get("id")]
+
+                if care_plan_ids:
+                    plan_placeholders = ", ".join(["%s"] * len(care_plan_ids))
+                    cur.execute(
+                        f"""
+                        SELECT id, care_plan_id, category, title, instructions, why_it_matters, criticality, flexibility,
+                               recurrence_type, recurrence_interval, recurrence_days_of_week, recurrence_until,
+                               seed_start, seed_duration_minutes, temporary_start, temporary_end, default_channel_policy,
+                               escalation_policy, created_at
+                        FROM win_definitions
+                        WHERE care_plan_id IN ({plan_placeholders})
+                        ORDER BY created_at ASC
+                        """,
+                        tuple(care_plan_ids),
+                    )
+                    win_definitions = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"""
+                    SELECT id, win_definition_id, patient_id, scheduled_start, scheduled_end, current_state,
+                           completion_time, completed_by, response_mode, created_at
+                    FROM win_instances
+                    WHERE patient_id IN ({placeholders})
+                    ORDER BY scheduled_start ASC
+                    """,
+                    tuple(patient_ids),
+                )
+                win_instances = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"SELECT * FROM patient_clinical_facts WHERE patient_id IN ({placeholders}) ORDER BY created_at ASC",
+                    tuple(patient_ids),
+                )
+                patient_clinical_facts = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"SELECT * FROM patient_observations WHERE patient_id IN ({placeholders}) ORDER BY created_at ASC",
+                    tuple(patient_ids),
+                )
+                patient_observations = [_row_dict(cur, row) for row in cur.fetchall()]
+
+                cur.execute(
+                    f"SELECT * FROM patient_day_plans WHERE patient_id IN ({placeholders}) ORDER BY created_at ASC",
+                    tuple(patient_ids),
+                )
+                patient_day_plans = [_row_dict(cur, row) for row in cur.fetchall()]
+
+            cur.execute(
+                """
+                SELECT id, phone_number, state, status, data, expires_at, completion_note, completed_at, updated_at
+                FROM onboarding_sessions
+                WHERE regexp_replace(replace(phone_number, 'whatsapp:', ''), '[^0-9+]', '', 'g')
+                      = regexp_replace(%s, '[^0-9+]', '', 'g')
+                ORDER BY updated_at DESC
+                """,
+                (str(participant.get("phone_number") or ""),),
+            )
+            onboarding_sessions = [_row_dict(cur, row) for row in cur.fetchall()]
+
+        return {
+            "participant": participant,
+            "linked_patients": linked_patients,
+            "caregiver_links": caregiver_links,
+            "message_events": message_events,
+            "participant_feedback": participant_feedback,
+            "onboarding_sessions": onboarding_sessions,
+            "care_plans": care_plans,
+            "win_definitions": win_definitions,
+            "win_instances": win_instances,
+            "patient_clinical_facts": patient_clinical_facts,
+            "patient_observations": patient_observations,
+            "patient_day_plans": patient_day_plans,
+            "privacy_requests": self.list_privacy_requests(subject_participant_id=subject_participant_id),
+        }
 
     def create_personalization_rule(
         self,
