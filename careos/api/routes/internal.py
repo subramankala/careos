@@ -614,6 +614,11 @@ def dashboard_recent_events(patient_id: str = Query(...), limit: int = Query(def
     return {"items": _derive_recent_events(patient_id, max(limit, 1))}
 
 
+@router.get("/internal/product-metrics/overview")
+def product_metrics_overview(days: int = Query(default=7), patient_id: str | None = Query(default=None)) -> dict:
+    return context.store.get_product_metrics_overview(days=max(days, 1), patient_id=patient_id)
+
+
 @router.get("/internal/dashboard/task-criticality")
 def dashboard_task_criticality(patient_id: str = Query(...)) -> dict:
     return {"items": _derive_task_criticality(patient_id)}

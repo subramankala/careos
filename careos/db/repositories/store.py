@@ -125,6 +125,137 @@ def normalized_responsibility_assignment(row: dict) -> dict:
     }
 
 
+def _product_command_label(body: str) -> str:
+    normalized = " ".join(str(body or "").strip().lower().split())
+    if not normalized:
+        return "empty"
+    exact = {
+        "?": "help",
+        "help": "help",
+        "schedule": "schedule",
+        "today": "schedule",
+        "status": "status",
+        "next": "next",
+        "whoami": "whoami",
+        "profile": "profile",
+        "patients": "patients",
+        "team": "team",
+        "caregivers": "caregivers",
+        "list caregivers": "caregivers",
+        "cancel onboarding": "cancel_onboarding",
+        "exit onboarding": "cancel_onboarding",
+        "stop onboarding": "cancel_onboarding",
+        "restart onboarding": "restart_onboarding",
+        "start onboarding again": "restart_onboarding",
+        "register me as patient": "register_me_as_patient",
+    }
+    if normalized in exact:
+        return exact[normalized]
+    prefixes = (
+        ("done ", "done"),
+        ("skip ", "skip"),
+        ("delay ", "delay"),
+        ("feedback ", "feedback"),
+        ("bug ", "bug"),
+        ("idea ", "idea"),
+        ("remember ", "remember"),
+        ("note ", "note"),
+        ("plan ", "plan"),
+        ("forget ", "forget"),
+        ("forget plan ", "forget_plan"),
+        ("set caregiver ", "set_caregiver"),
+        ("help ", "help_topic"),
+        ("approve ", "approve"),
+        ("decline ", "decline"),
+        ("show dashboard", "show_dashboard"),
+        ("show caregiver dashboard", "show_dashboard"),
+    )
+    for prefix, label in prefixes:
+        if normalized.startswith(prefix):
+            return label
+    return "free_text"
+
+
+def _build_product_metrics_overview(
+    *,
+    message_events: list[dict],
+    feedback_items: list[dict],
+    telemetry_events: list[dict],
+    active_onboarding_sessions: int,
+    now: datetime,
+    since: datetime,
+) -> dict:
+    inbound_events = [row for row in message_events if str(row.get("direction") or "") == "inbound"]
+    outbound_events = [row for row in message_events if str(row.get("direction") or "") == "outbound"]
+    command_counts: dict[str, int] = defaultdict(int)
+    for row in inbound_events:
+        command_counts[_product_command_label(str(row.get("body") or ""))] += 1
+    top_commands = [
+        {"command": name, "count": command_counts[name]}
+        for name in sorted(command_counts, key=lambda item: (-command_counts[item], item))
+    ]
+
+    feedback_by_type: dict[str, int] = defaultdict(int)
+    setup_ratings = {"yes": 0, "somewhat": 0, "no": 0}
+    for item in feedback_items:
+        feedback_type = str(item.get("feedback_type") or "")
+        if feedback_type:
+            feedback_by_type[feedback_type] += 1
+        if feedback_type == "onboarding_setup_rating":
+            rating = str(item.get("message") or "").strip().lower()
+            if rating in setup_ratings:
+                setup_ratings[rating] += 1
+
+    telemetry_by_name: dict[str, int] = defaultdict(int)
+    for item in telemetry_events:
+        event_name = str(item.get("event_name") or "")
+        if event_name:
+            telemetry_by_name[event_name] += 1
+
+    onboarding_started = telemetry_by_name.get("onboarding_started", 0)
+    onboarding_completed = (
+        telemetry_by_name.get("onboarding_self_completed", 0)
+        + telemetry_by_name.get("onboarding_caregiver_verified", 0)
+    )
+    completion_rate = round((onboarding_completed / onboarding_started) * 100, 1) if onboarding_started else 0.0
+
+    return {
+        "window": {
+            "days": max((now.date() - since.date()).days, 0),
+            "since": since.isoformat(),
+            "until": now.isoformat(),
+        },
+        "usage": {
+            "inbound_messages": len(inbound_events),
+            "outbound_messages": len(outbound_events),
+            "active_participants": len({str(row.get("participant_id") or "") for row in message_events if row.get("participant_id")}),
+            "active_patients": len({str(row.get("patient_id") or "") for row in message_events if row.get("patient_id")}),
+            "top_commands": top_commands[:12],
+            "free_text_messages": command_counts.get("free_text", 0),
+        },
+        "feedback": {
+            "total": len(feedback_items),
+            "by_type": [{"feedback_type": name, "count": feedback_by_type[name]} for name in sorted(feedback_by_type, key=lambda item: (-feedback_by_type[item], item))],
+            "setup_ratings": setup_ratings,
+        },
+        "onboarding": {
+            "started": onboarding_started,
+            "self_completed": telemetry_by_name.get("onboarding_self_completed", 0),
+            "caregiver_verification_started": telemetry_by_name.get("onboarding_caregiver_verification_started", 0),
+            "caregiver_verified": telemetry_by_name.get("onboarding_caregiver_verified", 0),
+            "cancelled": telemetry_by_name.get("onboarding_cancelled", 0),
+            "restarted": telemetry_by_name.get("onboarding_restarted", 0),
+            "setup_started": telemetry_by_name.get("onboarding_setup_started", 0),
+            "setup_completed": telemetry_by_name.get("onboarding_setup_completed", 0),
+            "active_sessions": active_onboarding_sessions,
+            "completion_rate_percent": completion_rate,
+        },
+        "telemetry": {
+            "events_by_name": [{"event_name": name, "count": telemetry_by_name[name]} for name in sorted(telemetry_by_name, key=lambda item: (-telemetry_by_name[item], item))],
+        },
+    }
+
+
 @dataclass
 class CarePlanPatch:
     status: str | None = None
@@ -467,6 +598,26 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def log_product_telemetry_event(
+        self,
+        *,
+        event_name: str,
+        source: str,
+        tenant_id: str | None = None,
+        patient_id: str | None = None,
+        participant_id: str | None = None,
+        actor_role: str = "",
+        channel: str = "",
+        event_value: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_product_metrics_overview(self, *, days: int, patient_id: str | None = None) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
     def create_personalization_rule(
         self,
         *,
@@ -620,6 +771,7 @@ class InMemoryStore(Store):
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
         self.participant_feedback: list[dict] = []
+        self.product_telemetry_events: list[dict] = []
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -1772,6 +1924,70 @@ class InMemoryStore(Store):
         }
         self.participant_feedback.append(row)
         return dict(row)
+
+    def log_product_telemetry_event(
+        self,
+        *,
+        event_name: str,
+        source: str,
+        tenant_id: str | None = None,
+        patient_id: str | None = None,
+        participant_id: str | None = None,
+        actor_role: str = "",
+        channel: str = "",
+        event_value: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        row = {
+            "id": str(uuid4()),
+            "tenant_id": str(tenant_id or ""),
+            "patient_id": str(patient_id or ""),
+            "participant_id": str(participant_id or ""),
+            "event_name": str(event_name),
+            "source": str(source),
+            "actor_role": str(actor_role),
+            "channel": str(channel),
+            "event_value": str(event_value),
+            "structured_context": dict(structured_context or {}),
+            "created_at": datetime.now(UTC),
+        }
+        self.product_telemetry_events.append(row)
+        return dict(row)
+
+    def get_product_metrics_overview(self, *, days: int, patient_id: str | None = None) -> dict:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=max(int(days), 1))
+        patient_filter = str(patient_id or "")
+
+        def _matches_window(row: dict) -> bool:
+            created_at = row.get("created_at")
+            if not isinstance(created_at, datetime):
+                return False
+            if created_at < since or created_at > now:
+                return False
+            if patient_filter and str(row.get("patient_id") or "") != patient_filter:
+                return False
+            return True
+
+        message_events = [dict(row) for row in self.message_events if _matches_window(row)]
+        feedback_items = [dict(row) for row in self.participant_feedback if _matches_window(row)]
+        telemetry_events = [dict(row) for row in self.product_telemetry_events if _matches_window(row)]
+        active_sessions = 0
+        for session in self.onboarding_sessions.values():
+            if str(session.get("status") or "") != "active":
+                continue
+            if patient_filter and str(session.get("data", {}).get("setup_patient_id") or "") != patient_filter:
+                continue
+            active_sessions += 1
+
+        return _build_product_metrics_overview(
+            message_events=message_events,
+            feedback_items=feedback_items,
+            telemetry_events=telemetry_events,
+            active_onboarding_sessions=active_sessions,
+            now=now,
+            since=since,
+        )
 
     def create_personalization_rule(
         self,
@@ -3669,6 +3885,99 @@ class PostgresStore(Store):
                 ),
             )
             return _row_dict(cur, cur.fetchone())
+
+    def log_product_telemetry_event(
+        self,
+        *,
+        event_name: str,
+        source: str,
+        tenant_id: str | None = None,
+        patient_id: str | None = None,
+        participant_id: str | None = None,
+        actor_role: str = "",
+        channel: str = "",
+        event_value: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        sql = """
+        INSERT INTO product_telemetry_events
+        (tenant_id, patient_id, participant_id, event_name, source, actor_role, channel, event_value, structured_context)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        RETURNING id, tenant_id, patient_id, participant_id, event_name, source, actor_role, channel, event_value, structured_context, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    participant_id,
+                    event_name,
+                    source,
+                    actor_role,
+                    channel,
+                    event_value,
+                    json.dumps(structured_context or {}),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
+
+    def get_product_metrics_overview(self, *, days: int, patient_id: str | None = None) -> dict:
+        now = datetime.now(UTC)
+        since = now - timedelta(days=max(int(days), 1))
+        params: list[object] = [_ensure_utc(since), _ensure_utc(now)]
+        patient_clause = ""
+        if patient_id:
+            patient_clause = " AND patient_id = %s"
+            params.append(patient_id)
+
+        message_sql = f"""
+        SELECT participant_id, patient_id, direction, body, created_at
+        FROM message_events
+        WHERE created_at >= %s
+          AND created_at <= %s
+          {patient_clause}
+        """
+        feedback_sql = f"""
+        SELECT patient_id, feedback_type, message, created_at
+        FROM participant_feedback
+        WHERE created_at >= %s
+          AND created_at <= %s
+          {patient_clause}
+        """
+        telemetry_sql = f"""
+        SELECT patient_id, event_name, created_at
+        FROM product_telemetry_events
+        WHERE created_at >= %s
+          AND created_at <= %s
+          {patient_clause}
+        """
+        active_session_sql = """
+        SELECT COUNT(*)
+        FROM onboarding_sessions
+        WHERE status = 'active'
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(message_sql, tuple(params))
+            message_events = [_row_dict(cur, row) for row in cur.fetchall()]
+
+            cur.execute(feedback_sql, tuple(params))
+            feedback_items = [_row_dict(cur, row) for row in cur.fetchall()]
+
+            cur.execute(telemetry_sql, tuple(params))
+            telemetry_events = [_row_dict(cur, row) for row in cur.fetchall()]
+
+            cur.execute(active_session_sql)
+            active_sessions = int(cur.fetchone()[0])
+
+        return _build_product_metrics_overview(
+            message_events=message_events,
+            feedback_items=feedback_items,
+            telemetry_events=telemetry_events,
+            active_onboarding_sessions=active_sessions,
+            now=now,
+            since=since,
+        )
 
     def create_personalization_rule(
         self,

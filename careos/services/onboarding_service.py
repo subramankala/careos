@@ -107,6 +107,13 @@ class OnboardingService:
 
         if identity is not None and linked_patient_count > 0 and session is not None and session.status == "active":
             if self._is_onboarding_cancel_command(body):
+                self._log_product_telemetry(
+                    event_name="onboarding_cancelled",
+                    source="whatsapp_onboarding",
+                    identity=identity,
+                    patient_id=self._session_patient_id(session),
+                    structured_context={"reason": "existing_user_cancel"},
+                )
                 self._save_session(
                     sender_phone,
                     state="completed",
@@ -116,6 +123,13 @@ class OnboardingService:
                 )
                 return "Okay, I closed onboarding. Reply 'help' for commands."
             if self._is_onboarding_restart_command(body):
+                self._log_product_telemetry(
+                    event_name="onboarding_restarted",
+                    source="whatsapp_onboarding",
+                    identity=identity,
+                    patient_id=self._session_patient_id(session),
+                    structured_context={"existing_user": True},
+                )
                 self._save_session(
                     sender_phone,
                     state="choose_role",
@@ -184,6 +198,12 @@ class OnboardingService:
                         "Reply with caregiver WhatsApp number (+countrycode)."
                     )
                 if self._is_existing_user_onboarding_trigger(body):
+                    self._log_product_telemetry(
+                        event_name="onboarding_started",
+                        source="whatsapp_onboarding",
+                        identity=identity,
+                        structured_context={"existing_user": True, "linked_patient_count": linked_patient_count},
+                    )
                     self._save_session(sender_phone, state="choose_role", status="active", data={"existing_user": True})
                     return "You already have caregiver access.\n" + self._role_prompt()
                 return None
@@ -208,6 +228,12 @@ class OnboardingService:
             expired = True
 
         if session is None or session.status != "active":
+            self._log_product_telemetry(
+                event_name="onboarding_started",
+                source="whatsapp_onboarding",
+                identity=identity,
+                structured_context={"expired_restart": expired, "linked_patient_count": linked_patient_count},
+            )
             self._save_session(sender_phone, state="choose_role", status="active", data={})
             prefix = "Previous onboarding session expired.\n" if expired else ""
             return prefix + self._role_prompt()
@@ -370,6 +396,14 @@ class OnboardingService:
             return self._setup_menu_prompt(source=str(session_data.get("setup_source") or ""))
 
         if normalized in {"finish", "finish for now", "4"} and session_data.get("setup_state", "menu") == "menu":
+            self._log_product_telemetry(
+                event_name="onboarding_setup_completed",
+                source="whatsapp_onboarding",
+                identity=identity,
+                patient_id=str(session_data.get("setup_patient_id") or ""),
+                event_value=str(session_data.get("setup_source") or ""),
+                structured_context={"setup_source": str(session_data.get("setup_source") or "")},
+            )
             self._save_session(
                 sender_phone,
                 state="completed",
@@ -790,6 +824,19 @@ class OnboardingService:
                 patient_id=chosen.patient_id,
                 source="verification_approved",
             )
+            caregiver_identity = ParticipantIdentity(
+                tenant_id=chosen.tenant_id,
+                participant_id=chosen.caregiver_participant_id,
+                participant_role=Role.CAREGIVER,
+            )
+            self._log_product_telemetry(
+                event_name="onboarding_caregiver_verified",
+                source="whatsapp_onboarding",
+                identity=caregiver_identity,
+                patient_id=chosen.patient_id,
+                event_value=caregiver_preset,
+                structured_context={"verification_request_id": chosen.id, "approved_by": resolution_actor},
+            )
             if patient_requests:
                 caregiver_msg = (
                     f"Approved by {chosen.patient_name}. Caregiver access is now active.\n"
@@ -815,6 +862,18 @@ class OnboardingService:
             status="declined",
             resolved_at=datetime.now(UTC),
             resolution_note=f"declined_by_{resolution_actor}",
+        )
+        decline_identity = ParticipantIdentity(
+            tenant_id=chosen.tenant_id,
+            participant_id=chosen.caregiver_participant_id,
+            participant_role=Role.CAREGIVER,
+        )
+        self._log_product_telemetry(
+            event_name="onboarding_caregiver_declined",
+            source="whatsapp_onboarding",
+            identity=decline_identity,
+            patient_id=chosen.patient_id,
+            structured_context={"verification_request_id": chosen.id, "declined_by": resolution_actor},
         )
         if patient_requests:
             self.store.save_onboarding_session(
@@ -997,6 +1056,18 @@ class OnboardingService:
         patient_id = str(patient["id"])
         self.store.link_caregiver(participant_id, patient_id)
         self.store.set_active_patient_context(participant_id, patient_id, "onboarding_self")
+        participant_identity = ParticipantIdentity(
+            tenant_id=tenant_id,
+            participant_id=participant_id,
+            participant_role=Role.PATIENT,
+        )
+        self._log_product_telemetry(
+            event_name="onboarding_self_completed",
+            source="whatsapp_onboarding",
+            identity=participant_identity,
+            patient_id=patient_id,
+            structured_context={"created_new_identity": identity is None or participant_record is None},
+        )
         return {"participant_id": participant_id, "patient_id": patient_id}
 
     def _start_caregiver_verification(
@@ -1100,6 +1171,14 @@ class OnboardingService:
             last_sent_at=now,
             resolution_note="initial_send_success" if sent else "initial_send_not_configured",
         )
+        self._log_product_telemetry(
+            event_name="onboarding_caregiver_verification_started",
+            source="whatsapp_onboarding",
+            identity=identity,
+            patient_id=patient_id,
+            participant_id=caregiver_participant_id,
+            structured_context={"delivery": "patient_verification", "request_id": request.id, "sent": sent},
+        )
         return self.store.get_verification_request(request.id)
 
     def _start_patient_initiated_caregiver_invite(
@@ -1186,6 +1265,14 @@ class OnboardingService:
             last_sent_at=now,
             resolution_note="invite_sent" if sent else "invite_not_configured",
         )
+        self._log_product_telemetry(
+            event_name="onboarding_caregiver_verification_started",
+            source="whatsapp_onboarding",
+            identity=identity,
+            patient_id=patient_id,
+            participant_id=caregiver_participant_id,
+            structured_context={"delivery": "caregiver_invite", "request_id": request.id, "sent": sent, "preset": preset},
+        )
         return self.store.get_verification_request(request.id), None
 
     def _send_verification_prompt(self, request: CaregiverVerificationRequest) -> bool:
@@ -1230,6 +1317,20 @@ class OnboardingService:
             },
             expires_at=datetime.now(UTC) + timedelta(hours=max(int(settings.onboarding_session_ttl_hours), 1)),
             completion_note="",
+        )
+        participant = self.store.get_participant_record(participant_id)
+        tenant_id = str(participant.get("tenant_id") or "") if participant else ""
+        actor_role = str(participant.get("role") or "")
+        self.store.log_product_telemetry_event(
+            event_name="onboarding_setup_started",
+            source="whatsapp_onboarding",
+            tenant_id=tenant_id or None,
+            patient_id=patient_id,
+            participant_id=participant_id,
+            actor_role=actor_role,
+            channel="whatsapp",
+            event_value=source,
+            structured_context={"setup_source": source},
         )
 
     def _choose_verification_request(
@@ -1348,6 +1449,36 @@ class OnboardingService:
             completion_note=completion_note,
         )
 
+    def _log_product_telemetry(
+        self,
+        *,
+        event_name: str,
+        source: str,
+        identity: ParticipantIdentity | None = None,
+        patient_id: str | None = None,
+        participant_id: str | None = None,
+        event_value: str = "",
+        structured_context: dict | None = None,
+    ) -> None:
+        resolved_participant_id = participant_id or (identity.participant_id if identity is not None else None)
+        self.store.log_product_telemetry_event(
+            event_name=event_name,
+            source=source,
+            tenant_id=identity.tenant_id if identity is not None else None,
+            patient_id=patient_id,
+            participant_id=resolved_participant_id,
+            actor_role=identity.participant_role.value if identity is not None else "",
+            channel="whatsapp",
+            event_value=event_value,
+            structured_context=structured_context or {},
+        )
+
+    def _session_patient_id(self, session: OnboardingSession | None) -> str | None:
+        if session is None:
+            return None
+        patient_id = str((session.data or {}).get("setup_patient_id") or "")
+        return patient_id or None
+
     def _role_prompt(self) -> str:
         return (
             "Welcome to CareOS.\n"
@@ -1426,6 +1557,14 @@ class OnboardingService:
                 "active_flow": active_flow,
             },
         )
+        self._log_product_telemetry(
+            event_name="participant_feedback_captured",
+            source="whatsapp_feedback",
+            identity=identity,
+            patient_id=patient_id,
+            event_value=feedback_type,
+            structured_context={"feedback_type": feedback_type, "active_flow": active_flow},
+        )
         return "Thanks. Your feedback was saved."
 
     def _active_patient_label(
@@ -1474,6 +1613,15 @@ class OnboardingService:
                 "setup_source": str(data.get("setup_source") or ""),
                 "completion_note": str(session.completion_note or ""),
             },
+        )
+        self._log_product_telemetry(
+            event_name="participant_feedback_captured",
+            source="whatsapp_feedback",
+            identity=identity,
+            patient_id=patient_id,
+            participant_id=participant_id,
+            event_value="onboarding_setup_rating",
+            structured_context={"feedback_type": "onboarding_setup_rating", "rating": rating},
         )
         data["feedback_status"] = "recorded"
         self.store.save_onboarding_session(
