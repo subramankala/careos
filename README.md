@@ -295,6 +295,36 @@ Additional design docs:
 DB reset helper:
 - `scripts/reset_db.sh` (safe review mode by default; use `--apply` to execute)
 
+## Admin CLI
+
+Local operator workflow for metrics monitoring, privacy requests, subject export, and manual deletion planning:
+
+1. Set `CAREOS_ADMIN_CLI_TOKEN` in `.env` to a strong random value.
+2. Source the environment:
+```bash
+set -a
+source .env
+set +a
+```
+3. Log in locally:
+```bash
+python3 scripts/admin_cli.py login
+```
+
+Common commands:
+```bash
+python3 scripts/admin_cli.py metrics overview --days 30
+python3 scripts/admin_cli.py privacy requests list
+python3 scripts/admin_cli.py privacy requests create --type access --subject-participant-id <participant-id> --jurisdiction GDPR
+python3 scripts/admin_cli.py privacy export --subject-participant-id <participant-id> --out export.json
+python3 scripts/admin_cli.py privacy delete-plan --subject-participant-id <participant-id> --out delete-plan.json
+```
+
+Notes:
+- `login` is local CLI authentication only; it checks the token already present in your environment and stores a hashed session at `~/.careos-admin/session.json`.
+- `privacy delete-plan` does not delete anything. It generates a reviewable JSON plan with ordered SQL steps for manual execution after operator review.
+- The CLI talks to `CAREOS_ADMIN_API_BASE_URL`, or falls back to `CAREOS_GATEWAY_CAREOS_BASE_URL`, or `http://127.0.0.1:8115`.
+
 ## Control-plane rule
 
 The deployment path remains:
