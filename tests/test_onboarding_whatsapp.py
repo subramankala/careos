@@ -46,6 +46,11 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
     assert "Setup saved." in finish
     assert "SCHEDULE" in finish
 
+    help_text = _twilio(sender, "help", "SM_onboard_self_4b")
+    assert "CareOS home" in help_text
+    assert "Acting as: patient for Indira Devi" in help_text
+    assert "remember I had a stent placed in February" in help_text
+
     schedule = _twilio(sender, "schedule", "SM_onboard_self_5")
     assert "No wins are scheduled for today." in schedule
 

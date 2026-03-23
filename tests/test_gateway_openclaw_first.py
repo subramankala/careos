@@ -396,6 +396,24 @@ class _FakeOnboardingService:
     def _activate_setup_session(self, *, phone_number: str, participant_id: str, patient_id: str, source: str) -> None:
         self.setup_active = True
 
+    def render_home_screen(self, *, identity, linked_patients, active_patient_id):  # noqa: ANN001
+        label = active_patient_id
+        for patient in linked_patients:
+            if patient.patient_id == active_patient_id:
+                label = patient.display_name
+                break
+        return (
+            "CareOS home\n"
+            f"Acting as: {identity.participant_role.value} for {label}\n"
+            "Try one of these:\n"
+            "- schedule\n"
+            "- team\n"
+            "- who handles medications\n"
+            "- note tired today\n"
+            "- plan out this afternoon\n"
+            "- ask: what should I pay attention to today?"
+        )
+
     def maybe_handle_message(self, *, sender_phone: str, body: str, identity, linked_patient_count: int):  # noqa: ANN001
         normalized = body.strip().lower()
         if identity is None and body.strip().lower() == "hi":
@@ -813,10 +831,11 @@ def test_gateway_restores_help_legacy_command(monkeypatch) -> None:
             }
         )
         assert response.status_code == 200
-        assert b"Commands: schedule, next, status, whoami" in response.body
-        assert b"caregivers" in response.body
-        assert b"invite caregiver" in response.body
-        assert b"register me as patient" in response.body
+        assert b"CareOS home" in response.body
+        assert b"Acting as: caregiver for Patient One" in response.body
+        assert b"team" in response.body
+        assert b"who handles medications" in response.body
+        assert b"what should I pay attention to today?" in response.body
     finally:
         settings.gateway_conversation_mode = previous_mode
 

@@ -10,6 +10,7 @@ from careos.domain.models.api import (
     AddWinsRequest,
     CarePlanCreate,
     CaregiverVerificationRequest,
+    LinkedPatientSummary,
     ParticipantCreate,
     ParticipantIdentity,
     PatientCreate,
@@ -1343,6 +1344,63 @@ class OnboardingService:
             "2) someone I care for\n"
             "Reply 1 or 2"
         )
+
+    def render_home_screen(
+        self,
+        *,
+        identity: ParticipantIdentity,
+        linked_patients: list[LinkedPatientSummary],
+        active_patient_id: str | None,
+    ) -> str:
+        role = str(identity.participant_role.value)
+        active_label = self._active_patient_label(linked_patients, active_patient_id)
+        lines = ["CareOS home"]
+        if active_label:
+            lines.append(f"Acting as: {role} for {active_label}")
+        else:
+            lines.append(f"Acting as: {role}")
+
+        if role == Role.CAREGIVER.value:
+            lines.extend(
+                [
+                    "Try one of these:",
+                    "- schedule",
+                    "- team",
+                    "- who handles medications",
+                    "- note tired today",
+                    "- plan out this afternoon",
+                    "- ask: what should I pay attention to today?",
+                ]
+            )
+            if len(linked_patients) > 1:
+                lines.append("- patients")
+        else:
+            lines.extend(
+                [
+                    "Try one of these:",
+                    "- schedule",
+                    "- status",
+                    "- remember I had a stent placed in February",
+                    "- note slept 4 hours last night",
+                    "- plan doctor visit at 4 pm today",
+                    "- ask: which medicines are most important for me not to miss?",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _active_patient_label(
+        self,
+        linked_patients: list[LinkedPatientSummary],
+        active_patient_id: str | None,
+    ) -> str:
+        if not active_patient_id:
+            if len(linked_patients) == 1:
+                return linked_patients[0].display_name
+            return ""
+        for patient in linked_patients:
+            if patient.patient_id == active_patient_id:
+                return patient.display_name
+        return active_patient_id
 
     def _normalize_phone_input(self, raw_phone: str) -> str | None:
         phone = raw_phone.strip()

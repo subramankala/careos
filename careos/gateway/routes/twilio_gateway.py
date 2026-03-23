@@ -1326,6 +1326,13 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         )
     if normalized in {"caregivers", "list caregivers"}:
         return Response(content=message_response(_list_caregivers_reply(str(context["patient_id"]))), media_type="text/xml")
+    if normalized in {"help", "?", "start", "menu"}:
+        reply = app_context.onboarding.render_home_screen(
+            identity=identity,
+            linked_patients=linked_patients,
+            active_patient_id=str(context["patient_id"]),
+        )
+        return Response(content=message_response(reply), media_type="text/xml")
     if normalized in {"team", "care team"}:
         return Response(content=message_response(_list_care_team_reply(str(context["patient_id"]))), media_type="text/xml")
     if preset_command is not None:
