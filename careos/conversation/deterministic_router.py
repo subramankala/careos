@@ -23,7 +23,7 @@ class DeterministicRouter(ConversationEngine):
                     "dashboard, caregivers, set caregiver <phone> as observer|primary, "
                     "invite caregiver, pending invites, cancel invite <code>, "
                     "add a medication, add an appointment, add a routine, "
-                    "restart setup, cancel setup, register me as patient, cancel onboarding, restart onboarding, "
+                    "restart setup, cancel setup, register me as patient, cancel onboarding, restart onboarding, support, "
                     "done <item_no|win_id> [more items...], delay <item_no|win_id> <minutes>, skip <item_no|win_id>"
                 ),
             )
@@ -120,7 +120,7 @@ class DeterministicRouter(ConversationEngine):
             action="fallback",
             text=(
                 "I can handle: schedule, next, status, whoami, patients, switch, use, dashboard, caregivers, "
-                "invite management, setup shortcuts, onboarding controls, done, delay, skip, help."
+                "invite management, setup shortcuts, onboarding controls, support, done, delay, skip, help."
             ),
         )
 

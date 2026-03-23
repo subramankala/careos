@@ -127,6 +127,21 @@ Post-approval / post-self setup menu:
 - `3` add routines
 - `4` finish for now
 
+After setup, users can also reply:
+- `support`
+- `privacy`
+
+Support menu actions:
+- `1` see my feedback
+- `2` delete my profile
+- `3` export my data
+- `4` see my privacy requests
+
+Privacy/support behavior:
+- deletion from WhatsApp creates a tracked privacy request for manual review; it does not immediately erase records
+- export from WhatsApp creates a tracked export request
+- users can review their recent feedback and privacy requests directly in chat
+
 Wizard shortcuts:
 - Optional fields accept `skip`
 - Date format: `YYYY-MM-DD`

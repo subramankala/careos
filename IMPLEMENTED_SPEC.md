@@ -290,10 +290,21 @@ Post-approval setup menu:
 - `3` add routines (category, timing/window, optional instructions)
 - `4` finish for now
 
+Post-setup support/privacy access:
+- users can reply `support` or `privacy`
+- support menu options:
+  - `1` see my feedback
+  - `2` delete my profile
+  - `3` export my data
+  - `4` see my privacy requests
+- deletion from WhatsApp creates a privacy request record for manual review; it does not perform immediate hard deletion
+- export from WhatsApp creates a privacy export request record
+- support activity emits telemetry events for menu opens and selected actions
+
 Setup storage behavior:
 - setup inputs are draft in `onboarding_sessions.data` until the last step of each wizard path
 - on final step, item is written as active care-plan win definition + win instance
-- `finish for now` marks onboarding session completed and hands off to normal deterministic commands
+- `finish for now` marks onboarding session completed and hands off to normal deterministic commands, including `support`
 
 ## 15) Documentation Sync Policy
 

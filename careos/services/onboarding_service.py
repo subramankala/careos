@@ -1621,14 +1621,14 @@ class OnboardingService:
     def _post_setup_hint(self, source: str = "") -> str:
         normalized = str(source).strip().lower()
         if normalized == "verification_approved":
-            return "Or reply SCHEDULE, TEAM, or ask a question like: what should I pay attention to today?"
-        return "Or reply SCHEDULE, STATUS, or ask a question like: which medicines are most important for me not to miss?"
+            return "Or reply SCHEDULE, TEAM, SUPPORT, or ask a question like: what should I pay attention to today?"
+        return "Or reply SCHEDULE, STATUS, SUPPORT, or ask a question like: which medicines are most important for me not to miss?"
 
     def _post_setup_success_prompt(self, source: str = "") -> str:
         return (
             f"Setup saved.\n"
             f"{self._post_setup_hint(source=source)}\n"
-            "Was setup easy? Reply YES, SOMEWHAT, or NO. You can also send FEEDBACK <message>."
+            "Was setup easy? Reply YES, SOMEWHAT, or NO. You can also send FEEDBACK <message>. For privacy, exports, or deletion requests, reply SUPPORT."
         )
 
     def _caregiver_waiting_prompt(self, request: CaregiverVerificationRequest) -> str:

@@ -147,6 +147,12 @@ psql "$CAREOS_DATABASE_URL" -f careos/db/migrations/0013_care_responsibility_ass
 WhatsApp currently supports:
 
 - operational commands such as `schedule`, `status`, `done`, `delay`, `skip`, `patients`, `switch`, and `whoami`
+- support/privacy self-service:
+  - `support` or `privacy`
+  - `1` see my feedback
+  - `2` delete my profile
+  - `3` export my data
+  - `4` see my privacy requests
 - medication edit/delete flows from the schedule menu
 - patient-context capture:
   - `remember <key>: <fact>` or `remember <fact>`
@@ -201,6 +207,7 @@ WhatsApp command additions for multi-patient caregiver flow:
 - `switch`
 - `use <n|patient_id>`
 - `whoami` (now reports active context status)
+- `support` / `privacy` (opens privacy/self-service support menu)
 
 Patient-context commands:
 - `remember <key>: <fact>`
@@ -324,6 +331,26 @@ Notes:
 - `login` is local CLI authentication only; it checks the token already present in your environment and stores a hashed session at `~/.careos-admin/session.json`.
 - `privacy delete-plan` does not delete anything. It generates a reviewable JSON plan with ordered SQL steps for manual execution after operator review.
 - The CLI talks to `CAREOS_ADMIN_API_BASE_URL`, or falls back to `CAREOS_GATEWAY_CAREOS_BASE_URL`, or `http://127.0.0.1:8115`.
+
+## Privacy and Compliance Surface
+
+Current product behavior:
+- users can reply `support` in WhatsApp to access privacy/self-service options
+- `delete my profile` creates a tracked deletion request for manual operator review; it does not immediately hard-delete records
+- `export my data` creates a tracked export request
+- `see my privacy requests` shows recent request status
+- `see my feedback` shows recent feedback submitted by that participant
+
+Current operator/admin tooling:
+- `GET /internal/privacy/requests`
+- `POST /internal/privacy/requests`
+- `GET /internal/privacy/export?subject_participant_id=<id>`
+- `python3 scripts/admin_cli.py privacy ...`
+
+Scope boundary:
+- this codebase now includes operational support for access/export and deletion-request intake
+- hard deletion remains a manual reviewed operator workflow via export bundle + delete plan
+- legal/policy/process work needed for HIPAA, GDPR, and CCPA still extends beyond code alone
 
 ## Control-plane rule
 
