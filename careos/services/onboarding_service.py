@@ -96,6 +96,15 @@ class OnboardingService:
         session = self.store.get_onboarding_session(sender_phone)
         normalized = body.strip().lower()
 
+        feedback_reply = self._maybe_handle_pending_feedback(
+            sender_phone=sender_phone,
+            body=body,
+            identity=identity,
+            session=session,
+        )
+        if feedback_reply is not None:
+            return feedback_reply
+
         if identity is not None and linked_patient_count > 0 and session is not None and session.status == "active":
             if self._is_onboarding_cancel_command(body):
                 self._save_session(
@@ -365,7 +374,7 @@ class OnboardingService:
                 sender_phone,
                 state="completed",
                 status="completed",
-                data=session_data,
+                data={**session_data, "feedback_prompt": "setup_experience", "feedback_status": "pending"},
                 completion_note="setup_finished",
             )
             return self._post_setup_success_prompt(source=str(session_data.get("setup_source") or ""))
@@ -1308,7 +1317,11 @@ class OnboardingService:
         return "Or reply SCHEDULE, STATUS, or ask a question like: which medicines are most important for me not to miss?"
 
     def _post_setup_success_prompt(self, source: str = "") -> str:
-        return f"Setup saved.\n{self._post_setup_hint(source=source)}"
+        return (
+            f"Setup saved.\n"
+            f"{self._post_setup_hint(source=source)}\n"
+            "Was setup easy? Reply YES, SOMEWHAT, or NO. You can also send FEEDBACK <message>."
+        )
 
     def _caregiver_waiting_prompt(self, request: CaregiverVerificationRequest) -> str:
         return (
@@ -1388,6 +1401,33 @@ class OnboardingService:
             )
         return "\n".join(lines)
 
+    def maybe_capture_participant_feedback(
+        self,
+        *,
+        identity: ParticipantIdentity,
+        patient_id: str,
+        body: str,
+        source_channel: str,
+        active_flow: str = "",
+    ) -> str | None:
+        parsed = self._parse_explicit_feedback_command(body)
+        if parsed is None:
+            return None
+        feedback_type, message = parsed
+        self.store.create_participant_feedback(
+            tenant_id=identity.tenant_id,
+            patient_id=patient_id,
+            participant_id=identity.participant_id,
+            source_channel=source_channel,
+            feedback_type=feedback_type,
+            message=message,
+            structured_context={
+                "role": identity.participant_role.value,
+                "active_flow": active_flow,
+            },
+        )
+        return "Thanks. Your feedback was saved."
+
     def _active_patient_label(
         self,
         linked_patients: list[LinkedPatientSummary],
@@ -1401,6 +1441,76 @@ class OnboardingService:
             if patient.patient_id == active_patient_id:
                 return patient.display_name
         return active_patient_id
+
+    def _maybe_handle_pending_feedback(
+        self,
+        *,
+        sender_phone: str,
+        body: str,
+        identity: ParticipantIdentity | None,
+        session: OnboardingSession | None,
+    ) -> str | None:
+        if session is None:
+            return None
+        data = dict(session.data or {})
+        if str(data.get("feedback_status") or "") != "pending":
+            return None
+        rating = self._parse_setup_feedback_rating(body)
+        if rating is None or identity is None:
+            return None
+        patient_id = str(data.get("setup_patient_id") or "")
+        participant_id = str(data.get("setup_participant_id") or identity.participant_id)
+        if not patient_id:
+            return None
+        self.store.create_participant_feedback(
+            tenant_id=identity.tenant_id,
+            patient_id=patient_id,
+            participant_id=participant_id,
+            source_channel="whatsapp",
+            feedback_type="onboarding_setup_rating",
+            message=rating,
+            structured_context={
+                "role": identity.participant_role.value,
+                "setup_source": str(data.get("setup_source") or ""),
+                "completion_note": str(session.completion_note or ""),
+            },
+        )
+        data["feedback_status"] = "recorded"
+        self.store.save_onboarding_session(
+            phone_number=sender_phone,
+            state=session.state,
+            status=session.status,
+            data=data,
+            expires_at=session.expires_at,
+            completion_note=session.completion_note,
+        )
+        return "Thanks for the feedback."
+
+    def _parse_setup_feedback_rating(self, body: str) -> str | None:
+        normalized = " ".join(body.strip().lower().split())
+        mapping = {
+            "yes": "yes",
+            "1": "yes",
+            "somewhat": "somewhat",
+            "2": "somewhat",
+            "no": "no",
+            "3": "no",
+        }
+        return mapping.get(normalized)
+
+    def _parse_explicit_feedback_command(self, body: str) -> tuple[str, str] | None:
+        stripped = body.strip()
+        if not stripped:
+            return None
+        for prefix, feedback_type in (("feedback", "feedback"), ("bug", "bug"), ("idea", "idea")):
+            lowered = stripped.lower()
+            if lowered == prefix:
+                return None
+            if lowered.startswith(prefix + " "):
+                message = stripped[len(prefix) :].strip()
+                if message:
+                    return feedback_type, message
+        return None
 
     def _normalize_phone_input(self, raw_phone: str) -> str | None:
         phone = raw_phone.strip()

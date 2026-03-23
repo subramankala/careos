@@ -453,6 +453,20 @@ class Store(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def create_participant_feedback(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        source_channel: str,
+        feedback_type: str,
+        message: str,
+        structured_context: dict,
+    ) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
     def create_personalization_rule(
         self,
         *,
@@ -605,6 +619,7 @@ class InMemoryStore(Store):
         self.care_responsibility_assignments: dict[str, dict] = {}
         self.mediation_decision_idempotency: set[str] = set()
         self.message_events: list[dict] = []
+        self.participant_feedback: list[dict] = []
 
     def create_patient(self, payload: PatientCreate) -> dict:
         patient_id = str(uuid4())
@@ -1731,6 +1746,32 @@ class InMemoryStore(Store):
             "correlation_id": str(latest.get("correlation_id", "")),
             "created_at": latest.get("created_at").isoformat() if latest.get("created_at") else "",
         }
+
+    def create_participant_feedback(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        source_channel: str,
+        feedback_type: str,
+        message: str,
+        structured_context: dict,
+    ) -> dict:
+        row = {
+            "id": str(uuid4()),
+            "tenant_id": str(tenant_id),
+            "patient_id": str(patient_id),
+            "participant_id": str(participant_id),
+            "source_channel": str(source_channel),
+            "feedback_type": str(feedback_type),
+            "message": str(message),
+            "structured_context": dict(structured_context or {}),
+            "status": "new",
+            "created_at": datetime.now(UTC),
+        }
+        self.participant_feedback.append(row)
+        return dict(row)
 
     def create_personalization_rule(
         self,
@@ -3596,6 +3637,38 @@ class PostgresStore(Store):
                 "correlation_id": str(data.get("correlation_id", "")),
                 "created_at": data.get("created_at").isoformat() if data.get("created_at") else "",
             }
+
+    def create_participant_feedback(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str,
+        source_channel: str,
+        feedback_type: str,
+        message: str,
+        structured_context: dict,
+    ) -> dict:
+        sql = """
+        INSERT INTO participant_feedback
+        (tenant_id, patient_id, participant_id, source_channel, feedback_type, message, structured_context, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, 'new')
+        RETURNING id, tenant_id, patient_id, participant_id, source_channel, feedback_type, message, structured_context, status, created_at
+        """
+        with get_connection(self.database_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (
+                    tenant_id,
+                    patient_id,
+                    participant_id,
+                    source_channel,
+                    feedback_type,
+                    message,
+                    json.dumps(structured_context or {}),
+                ),
+            )
+            return _row_dict(cur, cur.fetchone())
 
     def create_personalization_rule(
         self,

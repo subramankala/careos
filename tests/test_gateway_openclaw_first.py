@@ -414,6 +414,16 @@ class _FakeOnboardingService:
             "- ask: what should I pay attention to today?"
         )
 
+    def maybe_capture_participant_feedback(self, *, identity, patient_id, body, source_channel, active_flow):  # noqa: ANN001
+        lowered = body.strip().lower()
+        if lowered.startswith("feedback "):
+            return "Thanks. Your feedback was saved."
+        if lowered.startswith("bug "):
+            return "Thanks. Your feedback was saved."
+        if lowered.startswith("idea "):
+            return "Thanks. Your feedback was saved."
+        return None
+
     def maybe_handle_message(self, *, sender_phone: str, body: str, identity, linked_patient_count: int):  # noqa: ANN001
         normalized = body.strip().lower()
         if identity is None and body.strip().lower() == "hi":
@@ -836,6 +846,25 @@ def test_gateway_restores_help_legacy_command(monkeypatch) -> None:
         assert b"team" in response.body
         assert b"who handles medications" in response.body
         assert b"what should I pay attention to today?" in response.body
+    finally:
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_captures_explicit_feedback_command(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "feedback schedule was confusing",
+                "MessageSid": "SM-gw-feedback",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Thanks. Your feedback was saved." in response.body
     finally:
         settings.gateway_conversation_mode = previous_mode
 

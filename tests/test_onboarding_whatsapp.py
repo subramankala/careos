@@ -51,6 +51,23 @@ def test_unknown_phone_self_onboarding_completes_and_can_use_schedule() -> None:
     assert "Acting as: patient for Indira Devi" in help_text
     assert "remember I had a stent placed in February" in help_text
 
+    rating = _twilio(sender, "somewhat", "SM_onboard_self_4c")
+    assert "Thanks for the feedback." in rating
+    assert hasattr(context.store, "participant_feedback")
+    assert any(
+        item.get("participant_id") is not None
+        and item.get("feedback_type") == "onboarding_setup_rating"
+        and item.get("message") == "somewhat"
+        for item in context.store.participant_feedback
+    )
+
+    explicit = _twilio(sender, "feedback the setup was a bit long", "SM_onboard_self_4d")
+    assert "Thanks. Your feedback was saved." in explicit
+    assert any(
+        item.get("feedback_type") == "feedback" and item.get("message") == "the setup was a bit long"
+        for item in context.store.participant_feedback
+    )
+
     schedule = _twilio(sender, "schedule", "SM_onboard_self_5")
     assert "No wins are scheduled for today." in schedule
 

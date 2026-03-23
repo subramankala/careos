@@ -1326,6 +1326,15 @@ async def twilio_gateway_webhook(request: Request) -> Response:
         )
     if normalized in {"caregivers", "list caregivers"}:
         return Response(content=message_response(_list_caregivers_reply(str(context["patient_id"]))), media_type="text/xml")
+    feedback_reply = app_context.onboarding.maybe_capture_participant_feedback(
+        identity=identity,
+        patient_id=str(context["patient_id"]),
+        body=text,
+        source_channel="whatsapp_gateway",
+        active_flow="gateway_chat",
+    )
+    if feedback_reply is not None:
+        return Response(content=message_response(feedback_reply), media_type="text/xml")
     if normalized in {"help", "?", "start", "menu"}:
         reply = app_context.onboarding.render_home_screen(
             identity=identity,

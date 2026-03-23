@@ -173,6 +173,23 @@ async def twilio_webhook(request: Request) -> Response:
         return Response(content=message_response(preflight_text), media_type="text/xml")
 
     normalized = body.strip().lower()
+    feedback_reply = context.onboarding.maybe_capture_participant_feedback(
+        identity=identity,
+        patient_id=selected_patient_id,
+        body=body,
+        source_channel="whatsapp_direct",
+        active_flow="direct_chat",
+    )
+    if feedback_reply is not None:
+        context.messaging.log_outbound(
+            tenant_id=participant.tenant_id,
+            patient_id=participant.patient_id,
+            participant_id=participant.participant_id,
+            body=feedback_reply,
+            correlation_id=correlation_id,
+        )
+        return Response(content=message_response(feedback_reply), media_type="text/xml")
+
     if normalized in {"help", "?", "start", "menu"}:
         active_patient_id = context.identity_service.get_active_patient_context(identity.participant_id)
         reply = context.onboarding.render_home_screen(
