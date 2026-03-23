@@ -142,6 +142,21 @@ Privacy/support behavior:
 - export from WhatsApp creates a tracked export request
 - users can review their recent feedback and privacy requests directly in chat
 
+Operator follow-up from admin CLI:
+
+```bash
+python3 scripts/admin_cli.py message send \
+  --participant-id <participant-id> \
+  --privacy-request-id <request-id> \
+  --body "We received your request and have a follow-up question."
+```
+
+Notes:
+- this sends a WhatsApp message from the CareOS business sender
+- outbound support replies are logged in `message_events`
+- `admin_message_sent` telemetry is emitted for auditability
+- if the participant has multiple linked patients, pass `--patient-id <patient-id>`
+
 Wizard shortcuts:
 - Optional fields accept `skip`
 - Date format: `YYYY-MM-DD`

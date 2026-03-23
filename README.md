@@ -322,6 +322,7 @@ Common commands:
 ```bash
 python3 scripts/admin_cli.py metrics overview --days 30
 python3 scripts/admin_cli.py message send --participant-id <participant-id> --body "We received your request and have a follow-up question."
+python3 scripts/admin_cli.py message send --participant-id <participant-id> --privacy-request-id <request-id> --body "Can you confirm you want us to remove your CareOS profile?"
 python3 scripts/admin_cli.py privacy requests list
 python3 scripts/admin_cli.py privacy requests create --type access --subject-participant-id <participant-id> --jurisdiction GDPR
 python3 scripts/admin_cli.py privacy export --subject-participant-id <participant-id> --out export.json
@@ -330,6 +331,8 @@ python3 scripts/admin_cli.py privacy delete-plan --subject-participant-id <parti
 
 Notes:
 - `login` is local CLI authentication only; it checks the token already present in your environment and stores a hashed session at `~/.careos-admin/session.json`.
+- `message send` sends a WhatsApp message through the configured Twilio sender, logs the outbound message in `message_events`, and emits `admin_message_sent` telemetry.
+- if a participant has multiple linked patients, pass `--patient-id` so outbound logging is unambiguous.
 - `privacy delete-plan` does not delete anything. It generates a reviewable JSON plan with ordered SQL steps for manual execution after operator review.
 - The CLI talks to `CAREOS_ADMIN_API_BASE_URL`, or falls back to `CAREOS_GATEWAY_CAREOS_BASE_URL`, or `http://127.0.0.1:8115`.
 

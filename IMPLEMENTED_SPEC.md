@@ -301,6 +301,12 @@ Post-setup support/privacy access:
 - export from WhatsApp creates a privacy export request record
 - support activity emits telemetry events for menu opens and selected actions
 
+Operator support follow-up:
+- admins can send WhatsApp follow-up messages through `scripts/admin_cli.py message send`
+- outbound admin replies are logged in `message_events`
+- outbound admin replies emit `admin_message_sent` telemetry
+- optional `privacy_request_id` can be attached for audit traceability
+
 Setup storage behavior:
 - setup inputs are draft in `onboarding_sessions.data` until the last step of each wizard path
 - on final step, item is written as active care-plan win definition + win instance
