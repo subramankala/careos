@@ -2537,19 +2537,38 @@ class PostgresStore(Store):
             }
 
     def get_participant_record(self, participant_id: str) -> dict | None:
-        sql = """
-        SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active,
-               person_identity_id, tenant_membership_id
-        FROM participants
-        WHERE id = %(participant_id)s
-        LIMIT 1
-        """
         with get_connection(self.database_url) as conn, conn.cursor() as cur:
-            cur.execute(sql, {"participant_id": participant_id})
+            try:
+                cur.execute(
+                    """
+                    SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active,
+                           person_identity_id, tenant_membership_id
+                    FROM participants
+                    WHERE id = %(participant_id)s
+                    LIMIT 1
+                    """,
+                    {"participant_id": participant_id},
+                )
+            except Exception as exc:
+                # Older pilot databases may not yet include identity backfill columns.
+                if "person_identity_id" not in str(exc) and "tenant_membership_id" not in str(exc):
+                    raise
+                cur.execute(
+                    """
+                    SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active
+                    FROM participants
+                    WHERE id = %(participant_id)s
+                    LIMIT 1
+                    """,
+                    {"participant_id": participant_id},
+                )
             row = cur.fetchone()
             if row is None:
                 return None
-            return _row_dict(cur, row)
+            data = _row_dict(cur, row)
+            data.setdefault("person_identity_id", None)
+            data.setdefault("tenant_membership_id", None)
+            return data
 
     def create_person_identity(self, payload: PersonIdentityCreate) -> dict:
         existing = self.get_person_identity_by_phone(payload.phone_number)
