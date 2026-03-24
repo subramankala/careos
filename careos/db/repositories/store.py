@@ -961,29 +961,41 @@ class InMemoryStore(Store):
         participant = self.participants.get(str(participant_id))
         if participant is None:
             raise ValueError("participant not found")
-        identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
-        if identity is None:
-            identity = self.create_person_identity(
-                PersonIdentityCreate(
-                    phone_number=str(participant["phone_number"]),
-                    display_name=str(participant.get("display_name", "")),
-                    preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
-                    preferred_language=str(participant.get("preferred_language", "en")),
-                    active=bool(participant.get("active", True)),
+        try:
+            identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
+            if identity is None:
+                identity = self.create_person_identity(
+                    PersonIdentityCreate(
+                        phone_number=str(participant["phone_number"]),
+                        display_name=str(participant.get("display_name", "")),
+                        preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
+                        preferred_language=str(participant.get("preferred_language", "en")),
+                        active=bool(participant.get("active", True)),
+                    )
                 )
-            )
-        membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
-        membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
-        if membership is None:
-            membership = self.create_tenant_membership(
-                TenantMembershipCreate(
-                    tenant_id=str(participant["tenant_id"]),
-                    person_identity_id=str(identity["id"]),
-                    membership_type=membership_type,
-                    display_name=str(participant.get("display_name", "")),
-                    membership_status="active" if bool(participant.get("active", True)) else "inactive",
+            membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
+            membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
+            if membership is None:
+                membership = self.create_tenant_membership(
+                    TenantMembershipCreate(
+                        tenant_id=str(participant["tenant_id"]),
+                        person_identity_id=str(identity["id"]),
+                        membership_type=membership_type,
+                        display_name=str(participant.get("display_name", "")),
+                        membership_status="active" if bool(participant.get("active", True)) else "inactive",
+                    )
                 )
-            )
+        except Exception as exc:
+            if "person_identities" not in str(exc) and "tenant_memberships" not in str(exc):
+                raise
+            participant.setdefault("person_identity_id", None)
+            participant.setdefault("tenant_membership_id", None)
+            self.participants[str(participant_id)] = participant
+            return {
+                "participant": dict(participant),
+                "person_identity": None,
+                "tenant_membership": None,
+            }
         participant["person_identity_id"] = str(identity["id"])
         participant["tenant_membership_id"] = str(membership["id"])
         self.participants[str(participant_id)] = participant
@@ -2653,29 +2665,41 @@ class PostgresStore(Store):
         participant = self.get_participant_record(participant_id)
         if participant is None:
             raise ValueError("participant not found")
-        identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
-        if identity is None:
-            identity = self.create_person_identity(
-                PersonIdentityCreate(
-                    phone_number=str(participant["phone_number"]),
-                    display_name=str(participant.get("display_name", "")),
-                    preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
-                    preferred_language=str(participant.get("preferred_language", "en")),
-                    active=bool(participant.get("active", True)),
+        try:
+            identity = self.get_person_identity_by_phone(str(participant["phone_number"]))
+            if identity is None:
+                identity = self.create_person_identity(
+                    PersonIdentityCreate(
+                        phone_number=str(participant["phone_number"]),
+                        display_name=str(participant.get("display_name", "")),
+                        preferred_channel=str(participant.get("preferred_channel", "whatsapp")),
+                        preferred_language=str(participant.get("preferred_language", "en")),
+                        active=bool(participant.get("active", True)),
+                    )
                 )
-            )
-        membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
-        membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
-        if membership is None:
-            membership = self.create_tenant_membership(
-                TenantMembershipCreate(
-                    tenant_id=str(participant["tenant_id"]),
-                    person_identity_id=str(identity["id"]),
-                    membership_type=membership_type,
-                    display_name=str(participant.get("display_name", "")),
-                    membership_status="active" if bool(participant.get("active", True)) else "inactive",
+            membership_type = "patient_member" if str(participant.get("role")) == str(Role.PATIENT) else "caregiver_member"
+            membership = self.get_tenant_membership(str(participant["tenant_id"]), str(identity["id"]))
+            if membership is None:
+                membership = self.create_tenant_membership(
+                    TenantMembershipCreate(
+                        tenant_id=str(participant["tenant_id"]),
+                        person_identity_id=str(identity["id"]),
+                        membership_type=membership_type,
+                        display_name=str(participant.get("display_name", "")),
+                        membership_status="active" if bool(participant.get("active", True)) else "inactive",
+                    )
                 )
-            )
+        except Exception as exc:
+            # Older pilot databases may not yet include the identity tables.
+            if "person_identities" not in str(exc) and "tenant_memberships" not in str(exc):
+                raise
+            participant.setdefault("person_identity_id", None)
+            participant.setdefault("tenant_membership_id", None)
+            return {
+                "participant": participant,
+                "person_identity": None,
+                "tenant_membership": None,
+            }
         sql = """
         UPDATE participants
         SET person_identity_id = %(person_identity_id)s,

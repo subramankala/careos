@@ -173,3 +173,27 @@ def test_postgres_store_get_participant_record_tolerates_old_schema(monkeypatch)
     assert record["person_identity_id"] is None
     assert record["tenant_membership_id"] is None
     assert rollback_called is True
+
+
+def test_store_backfill_tolerates_missing_identity_tables(monkeypatch) -> None:
+    store = InMemoryStore()
+    tenant = store.create_tenant(TenantCreate(name="Legacy Family"))
+    participant = store.create_participant(
+        ParticipantCreate(
+            tenant_id=tenant["id"],
+            role=Role.PATIENT,
+            display_name="Legacy Patient",
+            phone_number="whatsapp:+15557770000",
+        )
+    )
+
+    def _missing_identity_table(phone_number: str):  # noqa: ARG001
+        raise Exception('relation "person_identities" does not exist')
+
+    monkeypatch.setattr(store, "get_person_identity_by_phone", _missing_identity_table)
+
+    result = store.ensure_identity_membership_for_participant(participant["id"])
+
+    assert result["participant"]["id"] == participant["id"]
+    assert result["person_identity"] is None
+    assert result["tenant_membership"] is None
