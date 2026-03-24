@@ -303,6 +303,7 @@ Post-setup support/privacy access:
 
 Operator support follow-up:
 - admins can send WhatsApp follow-up messages through `scripts/admin_cli.py message send`
+- admins can review recent participant feedback through `scripts/admin_cli.py feedback list --participant-id ...`
 - outbound admin replies are logged in `message_events`
 - outbound admin replies emit `admin_message_sent` telemetry
 - optional `privacy_request_id` can be attached for audit traceability

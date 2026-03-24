@@ -66,3 +66,44 @@ def test_internal_admin_message_send_logs_outbound(monkeypatch) -> None:
         and row.get("correlation_id") == "SM_admin_test_1"
         for row in context.store.message_events
     )
+
+
+def test_internal_feedback_list_returns_recent_feedback() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="Admin Feedback Family"))
+    participant = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=str(tenant["id"]),
+            role=Role.CAREGIVER,
+            display_name="Admin Feedback User",
+            phone_number="whatsapp:+15559990002",
+        )
+    )
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="Admin Feedback Patient",
+            timezone="UTC",
+            persona_type=PersonaType.CAREGIVER_MANAGED_ELDER,
+        )
+    )
+    context.store.link_caregiver(str(participant["id"]), str(patient["id"]))
+    context.store.create_participant_feedback(
+        tenant_id=str(tenant["id"]),
+        patient_id=str(patient["id"]),
+        participant_id=str(participant["id"]),
+        source_channel="whatsapp",
+        feedback_type="feedback",
+        message="The reminder was helpful.",
+        structured_context={"source": "test"},
+    )
+
+    response = client.get(
+        "/internal/feedback",
+        params={"participant_id": str(participant["id"]), "limit": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"]
+    assert payload["items"][0]["participant_id"] == str(participant["id"])
+    assert payload["items"][0]["message"] == "The reminder was helpful."

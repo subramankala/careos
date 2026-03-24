@@ -197,6 +197,17 @@ def _cmd_metrics_overview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_feedback_list(args: argparse.Namespace) -> int:
+    _require_login()
+    query = {
+        "participant_id": args.participant_id,
+        "limit": int(args.limit),
+    }
+    payload = _api_request("GET", f"/internal/feedback?{urlencode(query)}")
+    _print_json(payload)
+    return 0
+
+
 def _cmd_message_send(args: argparse.Namespace) -> int:
     _require_login()
     payload = _api_request(
@@ -293,6 +304,13 @@ def _build_parser() -> argparse.ArgumentParser:
     overview.add_argument("--days", type=int, default=30)
     overview.add_argument("--patient-id")
     overview.set_defaults(func=_cmd_metrics_overview)
+
+    feedback = subparsers.add_parser("feedback", help="Participant feedback review commands.")
+    feedback_sub = feedback.add_subparsers(dest="feedback_command", required=True)
+    feedback_list = feedback_sub.add_parser("list", help="List recent feedback for a participant.")
+    feedback_list.add_argument("--participant-id", required=True)
+    feedback_list.add_argument("--limit", type=int, default=20)
+    feedback_list.set_defaults(func=_cmd_feedback_list)
 
     privacy = subparsers.add_parser("privacy", help="Privacy/admin operations.")
     privacy_sub = privacy.add_subparsers(dest="privacy_command", required=True)

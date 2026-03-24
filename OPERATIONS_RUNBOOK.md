@@ -149,6 +149,7 @@ python3 scripts/admin_cli.py message send \
   --participant-id <participant-id> \
   --privacy-request-id <request-id> \
   --body "We received your request and have a follow-up question."
+python3 scripts/admin_cli.py feedback list --participant-id <participant-id>
 ```
 
 Notes:

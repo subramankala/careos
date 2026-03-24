@@ -652,6 +652,14 @@ def product_metrics_overview(days: int = Query(default=7), patient_id: str | Non
     return context.store.get_product_metrics_overview(days=max(days, 1), patient_id=patient_id)
 
 
+@router.get("/internal/feedback")
+def list_participant_feedback(
+    participant_id: str = Query(...),
+    limit: int = Query(default=20),
+) -> dict:
+    return {"items": context.store.list_participant_feedback(participant_id=participant_id, limit=max(limit, 1))}
+
+
 @router.post("/internal/privacy/requests")
 def create_privacy_request(payload: PrivacyRequestCreateRequest) -> dict:
     return context.store.create_privacy_request(
