@@ -2179,6 +2179,104 @@ def test_gateway_logs_inbound_provider_metadata(monkeypatch) -> None:
         settings.gateway_conversation_mode = previous_mode
 
 
+def test_gateway_taken_all_prefers_recent_reminder_patient_over_active_context(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.identity_service.active_patient_id = "patient-2"
+    fake_context.identity_service.linked_patients = [
+        LinkedPatientSummary(
+            patient_id="patient-1",
+            display_name="Patient One",
+            timezone="Asia/Kolkata",
+            tenant_id="tenant-1",
+        ),
+        LinkedPatientSummary(
+            patient_id="patient-2",
+            display_name="Patient Two",
+            timezone="Asia/Kolkata",
+            tenant_id="tenant-1",
+        ),
+    ]
+
+    class _RecentReminderAdapter(_AdapterBase):
+        def __init__(self) -> None:
+            super().__init__()
+            self.patient_timelines = {
+                "patient-1": [
+                    {
+                        "win_instance_id": "win-med-1",
+                        "title": "Brilinta 90mg (AM)",
+                        "category": "medication",
+                        "current_state": "due",
+                        "scheduled_start": "2099-03-15T08:00:00+00:00",
+                        "scheduled_end": "2099-03-15T08:30:00+00:00",
+                    },
+                    {
+                        "win_instance_id": "win-med-2",
+                        "title": "Nikoran 5mg (AM)",
+                        "category": "medication",
+                        "current_state": "due",
+                        "scheduled_start": "2099-03-15T08:00:00+00:00",
+                        "scheduled_end": "2099-03-15T08:30:00+00:00",
+                    },
+                ],
+                "patient-2": [],
+            }
+
+        def resolve_context(self, phone_number: str) -> dict | None:  # noqa: ARG002
+            patient_id = fake_context.identity_service.active_patient_id or "patient-2"
+            return {
+                "tenant_id": "tenant-1",
+                "participant_id": "participant-1",
+                "participant_role": "caregiver",
+                "patient_id": patient_id,
+                "patient_timezone": "Asia/Kolkata",
+                "patient_persona": "caregiver_managed_elder",
+            }
+
+        def get_today(self, patient_id: str) -> dict:
+            return {
+                "patient_id": patient_id,
+                "date": "2026-03-12",
+                "timezone": "Asia/Kolkata",
+                "timeline": list(self.patient_timelines.get(patient_id, [])),
+            }
+
+        def get_latest_scheduled_reminder_context(self, participant_id: str, patient_id: str) -> dict | None:  # noqa: ARG002
+            if patient_id != "patient-1":
+                return None
+            return {
+                "participant_id": "participant-1",
+                "patient_id": "patient-1",
+                "win_instance_id": "win-med-2",
+                "title": "Nikoran 5mg (AM)",
+                "scheduled_start": "2026-03-24T03:30:00+00:00",
+                "correlation_id": "sched:patient-1:latest",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+
+    adapter = _RecentReminderAdapter()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Taken all",
+                "MessageSid": "SM-gw-recent-reminder-context",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Marked 2 due medications as completed." in response.body
+        assert [item["instance_id"] for item in adapter.completed_instances] == ["win-med-1", "win-med-2"]
+        assert fake_context.identity_service.active_patient_id == "patient-1"
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
 def test_gateway_regression_thread_urgent_restart_setup_taken_all_then_schedule(monkeypatch) -> None:
     previous_mode = settings.gateway_conversation_mode
     settings.gateway_conversation_mode = "deterministic_first"

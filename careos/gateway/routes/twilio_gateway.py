@@ -784,6 +784,36 @@ def _resolve_context_for_message(
         app_context.identity_service.clear_active_patient_context(identity.participant_id)
         return (_patients_prompt(linked_patients, None), None)
 
+    if _is_short_completion_reply(body) or _is_bulk_medication_completion_reply(body):
+        freshest_patient_id = active_patient_id
+        freshest_created_at: datetime | None = None
+        for patient in linked_patients:
+            reminder_context = adapter.get_latest_scheduled_reminder_context(identity.participant_id, patient.patient_id)
+            if reminder_context is None:
+                continue
+            created_at_raw = str(reminder_context.get("created_at") or "").strip()
+            if not created_at_raw:
+                continue
+            try:
+                created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if freshest_created_at is None or created_at > freshest_created_at:
+                freshest_created_at = created_at
+                freshest_patient_id = patient.patient_id
+        if freshest_created_at is not None and freshest_patient_id and freshest_patient_id != active_patient_id:
+            age = datetime.now(UTC) - freshest_created_at.astimezone(UTC)
+            if age <= timedelta(hours=12):
+                try:
+                    app_context.identity_service.set_active_patient_context(
+                        identity.participant_id,
+                        freshest_patient_id,
+                        "recent_reminder_reply",
+                    )
+                except ValueError:
+                    return (_patients_prompt(linked_patients, active_patient_id), None)
+                return ("", freshest_patient_id)
+
     return ("", active_patient_id)
 
 
