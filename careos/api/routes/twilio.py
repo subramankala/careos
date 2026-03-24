@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import hashlib
 from urllib.parse import parse_qs
 
@@ -120,6 +121,7 @@ async def twilio_webhook(request: Request) -> Response:
     if not sender:
         raise HTTPException(status_code=400, detail="missing sender")
     body = payload.get("Body", "")
+    received_at = datetime.now(UTC)
     correlation_id = payload.get("MessageSid")
     if correlation_id is None or not correlation_id.strip():
         correlation_id = f"fallback_{hashlib.sha256(body_bytes).hexdigest()}"
@@ -158,6 +160,8 @@ async def twilio_webhook(request: Request) -> Response:
         participant_id=participant.participant_id,
         body=body,
         correlation_id=correlation_id,
+        provider_payload=dict(payload),
+        received_at=received_at,
     )
     if not is_new_inbound:
         return Response(content=message_response("Duplicate message received. No action taken."), media_type="text/xml")

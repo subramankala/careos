@@ -1341,6 +1341,24 @@ def _to_participant_context(context_row: dict) -> ParticipantContext:
     )
 
 
+def _log_gateway_inbound_message(*, context_row: dict, body: str, correlation_id: str, payload: dict, received_at: datetime) -> None:
+    messaging = getattr(app_context, "messaging", None)
+    if messaging is None:
+        return
+    try:
+        messaging.log_inbound(
+            tenant_id=str(context_row["tenant_id"]),
+            patient_id=str(context_row["patient_id"]),
+            participant_id=str(context_row["participant_id"]),
+            body=body,
+            correlation_id=correlation_id,
+            provider_payload=payload,
+            received_at=received_at,
+        )
+    except Exception:
+        logger.exception("gateway_inbound_message_log_failed", correlation_id=correlation_id)
+
+
 def _deterministic_reply(text: str, context_row: dict) -> str:
     today = adapter.get_today(str(context_row["patient_id"]))
     status = adapter.get_status(str(context_row["patient_id"]))
@@ -1351,11 +1369,15 @@ def _deterministic_reply(text: str, context_row: dict) -> str:
 @router.post("/gateway/twilio/webhook")
 async def twilio_gateway_webhook(request: Request) -> Response:
     body_bytes = await request.body()
+    received_at = datetime.now(UTC)
     decoded = body_bytes.decode("utf-8", errors="ignore")
     parsed = parse_qs(decoded, keep_blank_values=True)
     payload = {k: v[0] if v else "" for k, v in parsed.items()}
     sender = _normalize_sender_phone(payload.get("From", ""))
     text = str(payload.get("Body", "")).strip()
+    correlation_id = str(payload.get("MessageSid", "")).strip()
+    if not correlation_id:
+        correlation_id = f"fallback_{sha1(body_bytes).hexdigest()}"
     if not sender:
         return Response(content=message_response("Missing sender."), media_type="text/xml")
 
@@ -1414,6 +1436,13 @@ async def twilio_gateway_webhook(request: Request) -> Response:
             content=message_response("Could not resolve active patient context."),
             media_type="text/xml",
         )
+    _log_gateway_inbound_message(
+        context_row=context,
+        body=text,
+        correlation_id=correlation_id,
+        payload=dict(payload),
+        received_at=received_at,
+    )
 
     pending = _get_pending_action(context)
     if pending is not None and is_confirmation(text):

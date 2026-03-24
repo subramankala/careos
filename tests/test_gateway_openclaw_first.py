@@ -7,7 +7,9 @@ from careos.domain.models.api import CommandResult, LinkedPatientSummary, Partic
 from careos.gateway.careos_adapter import DashboardLinkError, TaskEditError
 from careos.gateway.routes import twilio_gateway
 from careos.services.care_team_service import CareTeamService
+from careos.services.messaging_service import MessageOrchestrator
 from careos.settings import settings
+from datetime import timedelta
 
 
 class _AdapterBase:
@@ -573,6 +575,8 @@ class _FakeStore:
         ]
         self.care_responsibility_assignments: list[dict] = []
         self.product_telemetry_events: list[dict] = []
+        self.message_events: list[dict] = []
+        self.message_idempotency: set[str] = set()
 
     def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
         return [dict(link) for (participant_id, linked_patient_id), link in self.links.items() if linked_patient_id == patient_id]
@@ -701,6 +705,40 @@ class _FakeStore:
         self.product_telemetry_events.append(event)
         return dict(event)
 
+    def log_message_event(
+        self,
+        *,
+        tenant_id: str,
+        patient_id: str,
+        participant_id: str | None,
+        direction: str,
+        channel: str,
+        message_type: str,
+        body: str,
+        correlation_id: str,
+        idempotency_key: str,
+        payload: dict,
+    ) -> bool:
+        if idempotency_key in self.message_idempotency:
+            return False
+        self.message_idempotency.add(idempotency_key)
+        self.message_events.append(
+            {
+                "tenant_id": tenant_id,
+                "patient_id": patient_id,
+                "participant_id": participant_id,
+                "direction": direction,
+                "channel": channel,
+                "message_type": message_type,
+                "body": body,
+                "structured_payload": dict(payload or {}),
+                "correlation_id": correlation_id,
+                "idempotency_key": idempotency_key,
+                "created_at": datetime.now(UTC) + timedelta(seconds=len(self.message_events)),
+            }
+        )
+        return True
+
 
 class _FakeLegacyRouter:
     def handle(self, text: str, context: ParticipantContext) -> CommandResult:
@@ -754,6 +792,7 @@ class _FakeAppContext:
         self.onboarding = _FakeOnboardingService()
         self.router = _FakeLegacyRouter()
         self.store = _FakeStore()
+        self.messaging = MessageOrchestrator(self.store)
         self.care_team = CareTeamService(self.store)
 
 
@@ -2104,6 +2143,37 @@ def test_gateway_urgent_symptom_reply_works_without_identity(monkeypatch) -> Non
         assert b"Reply SUPPORT for non-emergency CareOS help." in response.body
         assert fake_context.store.product_telemetry_events[-1]["participant_id"] is None
         assert fake_context.store.product_telemetry_events[-1]["event_value"] == "shortness_of_breath"
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_logs_inbound_provider_metadata(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "schedule",
+                "MessageSid": "SM-gw-meta-1",
+                "WaId": "15550001111",
+                "ProfileName": "Primary Caregiver",
+            }
+        )
+        assert response.status_code == 200
+        event = fake_context.store.message_events[-1]
+        payload = dict(event["structured_payload"])
+        assert payload["provider"] == "twilio"
+        assert payload["provider_message_sid"] == "SM-gw-meta-1"
+        assert payload["provider_wa_id"] == "15550001111"
+        assert payload["provider_profile_name"] == "Primary Caregiver"
+        assert payload["timestamp_source"] == "webhook_received_at"
+        assert "webhook_received_at" in payload
     finally:
         monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
         settings.gateway_conversation_mode = previous_mode
