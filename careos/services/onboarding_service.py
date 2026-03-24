@@ -85,6 +85,73 @@ class OnboardingService:
         normalized = " ".join(body.strip().lower().split())
         return normalized in {"restart onboarding", "start onboarding again"}
 
+    def _should_bypass_active_setup(self, body: str) -> bool:
+        normalized = " ".join(body.strip().lower().split())
+        if not normalized:
+            return False
+        exact = {
+            "help",
+            "?",
+            "schedule",
+            "today",
+            "next",
+            "status",
+            "whoami",
+            "profile",
+            "patients",
+            "switch",
+            "team",
+            "care team",
+            "caregivers",
+            "list caregivers",
+            "support",
+            "privacy",
+            "facts",
+            "clinical facts",
+            "remembered facts",
+            "observations",
+            "notes",
+            "active observations",
+            "plans",
+            "day plans",
+            "active plans",
+            "taken",
+            "took it",
+            "i took it",
+            "i took them",
+            "gave it",
+            "given",
+            "administered",
+            "taken all",
+            "taken all meds",
+            "took all",
+            "took all meds",
+            "done all meds",
+            "done all medications",
+        }
+        if normalized in exact:
+            return True
+        prefixes = (
+            "done ",
+            "skip ",
+            "delay ",
+            "use ",
+            "remember ",
+            "note ",
+            "plan ",
+            "forget ",
+            "forget plan ",
+            "set caregiver ",
+            "feedback ",
+            "bug ",
+            "idea ",
+            "approve ",
+            "decline ",
+            "who handles ",
+            "assign ",
+        )
+        return any(normalized.startswith(prefix) for prefix in prefixes)
+
     def _is_support_trigger(self, body: str) -> bool:
         normalized = " ".join(body.strip().lower().split())
         return normalized in {"support", "support menu", "privacy", "account help", "help with my account"}
@@ -190,6 +257,8 @@ class OnboardingService:
         if session is not None and session.status == "active" and session.state.startswith("setup_"):
             if identity is None:
                 return "Could not resolve setup context. Reply 'hi' to restart onboarding."
+            if self._should_bypass_active_setup(body):
+                return None
             if linked_patient_count > 0 and self._is_patient_invite_trigger(body):
                 invite_target = self._resolve_existing_user_patient_target(identity)
                 if invite_target is None:

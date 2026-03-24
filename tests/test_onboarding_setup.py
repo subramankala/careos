@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
 from careos.app_context import context
+from careos.domain.enums.core import Role
+from careos.domain.models.api import ParticipantIdentity
 from careos.main import app
 from careos.settings import settings
 
@@ -113,3 +117,53 @@ def test_setup_menu_restart_and_cancel_commands_work_mid_wizard() -> None:
     assert session is not None
     assert session.status == "completed"
     assert session.completion_note == "setup_cancelled"
+
+
+def test_setup_active_schedule_bypasses_setup_menu() -> None:
+    phone = "whatsapp:+15558880006"
+    context.store.save_onboarding_session(
+        phone_number=phone,
+        state="setup_menu",
+        status="active",
+        data={},
+        expires_at=datetime.now(UTC) + timedelta(minutes=15),
+    )
+    identity = ParticipantIdentity(
+        tenant_id="tenant-setup-bypass",
+        participant_id="participant-setup-bypass",
+        participant_role=Role.PATIENT,
+    )
+
+    result = context.onboarding.maybe_handle_message(
+        sender_phone=phone,
+        body="schedule",
+        identity=identity,
+        linked_patient_count=1,
+    )
+
+    assert result is None
+
+
+def test_setup_active_taken_all_bypasses_onboarding_handler() -> None:
+    phone = "whatsapp:+15558880007"
+    context.store.save_onboarding_session(
+        phone_number=phone,
+        state="setup_menu",
+        status="active",
+        data={},
+        expires_at=datetime.now(UTC) + timedelta(minutes=15),
+    )
+    identity = ParticipantIdentity(
+        tenant_id="tenant-setup-bypass",
+        participant_id="participant-setup-bypass",
+        participant_role=Role.PATIENT,
+    )
+
+    result = context.onboarding.maybe_handle_message(
+        sender_phone=phone,
+        body="Taken all",
+        identity=identity,
+        linked_patient_count=1,
+    )
+
+    assert result is None
