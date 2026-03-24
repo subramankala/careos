@@ -2553,6 +2553,9 @@ class PostgresStore(Store):
                 # Older pilot databases may not yet include identity backfill columns.
                 if "person_identity_id" not in str(exc) and "tenant_membership_id" not in str(exc):
                     raise
+                rollback = getattr(conn, "rollback", None)
+                if callable(rollback):
+                    rollback()
                 cur.execute(
                     """
                     SELECT id, tenant_id, role, display_name, phone_number, preferred_channel, preferred_language, active

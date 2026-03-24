@@ -107,6 +107,8 @@ def test_store_backfills_identity_membership_for_existing_participant() -> None:
 
 
 def test_postgres_store_get_participant_record_tolerates_old_schema(monkeypatch) -> None:
+    rollback_called = False
+
     class FakeCursor:
         def __init__(self) -> None:
             self.description = None
@@ -148,6 +150,10 @@ def test_postgres_store_get_participant_record_tolerates_old_schema(monkeypatch)
             return False
 
     class FakeConnection:
+        def rollback(self) -> None:
+            nonlocal rollback_called
+            rollback_called = True
+
         def cursor(self) -> FakeCursor:
             return FakeCursor()
 
@@ -166,3 +172,4 @@ def test_postgres_store_get_participant_record_tolerates_old_schema(monkeypatch)
     assert record["id"] == "participant-1"
     assert record["person_identity_id"] is None
     assert record["tenant_membership_id"] is None
+    assert rollback_called is True
