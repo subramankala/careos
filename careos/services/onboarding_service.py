@@ -181,6 +181,30 @@ class OnboardingService:
             return "cancel"
         return mapping.get(normalized)
 
+    def _restart_onboarding(self, *, sender_phone: str, identity: ParticipantIdentity | None, linked_patient_count: int, session_state: str = "") -> str:
+        structured_context: dict[str, object] = {
+            "existing_user": bool(identity is not None and linked_patient_count > 0),
+            "linked_patient_count": linked_patient_count,
+        }
+        if session_state:
+            structured_context["prior_session_state"] = session_state
+        self._log_product_telemetry(
+            event_name="onboarding_restarted",
+            source="whatsapp_onboarding",
+            identity=identity,
+            patient_id=self._session_patient_id(self.store.get_onboarding_session(sender_phone)),
+            structured_context=structured_context,
+        )
+        session_data = {"existing_user": True} if identity is not None and linked_patient_count > 0 else {}
+        self._save_session(
+            sender_phone,
+            state="choose_role",
+            status="active",
+            data=session_data,
+            completion_note="",
+        )
+        return "Onboarding restarted. Starting over now.\n" + self._role_prompt()
+
     def maybe_handle_message(
         self,
         *,
@@ -210,6 +234,17 @@ class OnboardingService:
         if support_reply is not None:
             return support_reply
 
+        if self._is_onboarding_restart_command(body):
+            session_state = ""
+            if session is not None and session.status == "active":
+                session_state = session.state
+            return self._restart_onboarding(
+                sender_phone=sender_phone,
+                identity=identity,
+                linked_patient_count=linked_patient_count,
+                session_state=session_state,
+            )
+
         if identity is not None and linked_patient_count > 0 and session is not None and session.status == "active":
             if self._is_onboarding_cancel_command(body):
                 self._log_product_telemetry(
@@ -227,22 +262,6 @@ class OnboardingService:
                     completion_note="onboarding_cancelled_by_existing_user",
                 )
                 return "Okay, I closed onboarding. Reply 'help' for commands."
-            if self._is_onboarding_restart_command(body):
-                self._log_product_telemetry(
-                    event_name="onboarding_restarted",
-                    source="whatsapp_onboarding",
-                    identity=identity,
-                    patient_id=self._session_patient_id(session),
-                    structured_context={"existing_user": True},
-                )
-                self._save_session(
-                    sender_phone,
-                    state="choose_role",
-                    status="active",
-                    data={"existing_user": True},
-                    completion_note="",
-                )
-                return "Restarting onboarding.\n" + self._role_prompt()
             invite_target = self._resolve_existing_user_patient_target(identity)
             if invite_target is not None:
                 invite_management = self._handle_existing_user_invite_management(

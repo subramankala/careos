@@ -426,6 +426,19 @@ class _FakeOnboardingService:
 
     def maybe_handle_message(self, *, sender_phone: str, body: str, identity, linked_patient_count: int):  # noqa: ANN001
         normalized = body.strip().lower()
+        if normalized in {"restart onboarding", "start onboarding again"}:
+            self.onboarding_active = True
+            self.setup_active = False
+            self.last_setup_type = None
+            return (
+                "Onboarding restarted. Starting over now.\n"
+                "Welcome to CareOS.\n"
+                "I can help with care schedules, medications, reminders, and care questions.\n\n"
+                "Are you onboarding for:\n"
+                "1) myself\n"
+                "2) someone I care for\n"
+                "Reply 1 or 2"
+            )
         if identity is None and body.strip().lower() == "hi":
             return (
                 "Welcome to CareOS.\n"
@@ -450,16 +463,6 @@ class _FakeOnboardingService:
             if normalized in {"cancel onboarding", "exit onboarding", "stop onboarding"}:
                 self.onboarding_active = False
                 return "Okay, I closed onboarding. Reply 'help' for commands."
-            if normalized in {"restart onboarding", "start onboarding again"}:
-                return (
-                    "Restarting onboarding.\n"
-                    "Welcome to CareOS.\n"
-                    "I can help with care schedules, medications, reminders, and care questions.\n\n"
-                    "Are you onboarding for:\n"
-                    "1) myself\n"
-                    "2) someone I care for\n"
-                    "Reply 1 or 2"
-                )
         if self.setup_active:
             if normalized in {"cancel setup", "cancel wizard"}:
                 self.setup_active = False
@@ -2101,6 +2104,103 @@ def test_gateway_urgent_symptom_reply_works_without_identity(monkeypatch) -> Non
         assert b"Reply SUPPORT for non-emergency CareOS help." in response.body
         assert fake_context.store.product_telemetry_events[-1]["participant_id"] is None
         assert fake_context.store.product_telemetry_events[-1]["event_value"] == "shortness_of_breath"
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_regression_thread_urgent_restart_setup_taken_all_then_schedule(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    adapter = _AdapterBase()
+    adapter.timeline = [
+        {
+            "win_instance_id": "win-med-1",
+            "title": "Brilinta 90mg (AM)",
+            "category": "medication",
+            "current_state": "due",
+            "scheduled_start": "2099-03-15T08:00:00+00:00",
+            "scheduled_end": "2099-03-15T08:30:00+00:00",
+        },
+        {
+            "win_instance_id": "win-med-2",
+            "title": "Cardivas 3.125mg (AM)",
+            "category": "medication",
+            "current_state": "due",
+            "scheduled_start": "2099-03-15T08:00:00+00:00",
+            "scheduled_end": "2099-03-15T08:30:00+00:00",
+        },
+        {
+            "win_instance_id": "win-meal-1",
+            "title": "Breakfast",
+            "category": "meal",
+            "current_state": "due",
+            "scheduled_start": "2099-03-15T08:00:00+00:00",
+            "scheduled_end": "2099-03-15T08:30:00+00:00",
+        },
+    ]
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", adapter)
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+
+        urgent = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "I am having chest pain",
+                "MessageSid": "SM-gw-thread-1",
+            }
+        )
+        assert urgent.status_code == 200
+        assert b"Chest pain can be an emergency." in urgent.body
+
+        restart = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Restart Onboarding",
+                "MessageSid": "SM-gw-thread-2",
+            }
+        )
+        assert restart.status_code == 200
+        assert b"Onboarding restarted. Starting over now." in restart.body
+
+        add_med = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Add medication",
+                "MessageSid": "SM-gw-thread-3",
+            }
+        )
+        assert add_med.status_code == 200
+        assert b"Medication name?" in add_med.body
+
+        taken_all = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Taken all",
+                "MessageSid": "SM-gw-thread-4",
+            }
+        )
+        assert taken_all.status_code == 200
+        assert b"Care setup menu:" not in taken_all.body
+        assert b"Marked 2 due medications as completed." in taken_all.body
+        assert [item["instance_id"] for item in adapter.completed_instances] == ["win-med-1", "win-med-2"]
+
+        schedule = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "Schedule",
+                "MessageSid": "SM-gw-thread-5",
+            }
+        )
+        assert schedule.status_code == 200
+        assert b"Care setup menu:" not in schedule.body
+        assert b"Schedule (2026-03-12):" in schedule.body
     finally:
         monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
         settings.gateway_conversation_mode = previous_mode

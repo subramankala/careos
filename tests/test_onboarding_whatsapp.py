@@ -199,6 +199,44 @@ def test_existing_user_support_menu_can_show_feedback_history() -> None:
     assert "Need bigger reminder text" in feedback
 
 
+def test_existing_user_restart_onboarding_is_immediate_and_explicit_without_active_session() -> None:
+    tenant = context.store.create_tenant(TenantCreate(name="Restart Family"))
+    participant = context.store.create_participant(
+        ParticipantCreate(
+            tenant_id=str(tenant["id"]),
+            role=Role.CAREGIVER,
+            display_name="Restart User",
+            phone_number="whatsapp:+15556660012",
+        )
+    )
+    patient = context.store.create_patient(
+        PatientCreate(
+            tenant_id=str(tenant["id"]),
+            display_name="Restart Patient",
+            timezone="UTC",
+            persona_type=PersonaType.CAREGIVER_MANAGED_ELDER,
+        )
+    )
+    context.store.link_caregiver(str(participant["id"]), str(patient["id"]))
+    identity = context.identity_service.resolve_participant_by_phone("whatsapp:+15556660012")
+    assert identity is not None
+
+    reply = context.onboarding.maybe_handle_message(
+        sender_phone="whatsapp:+15556660012",
+        body="Restart Onboarding",
+        identity=identity,
+        linked_patient_count=1,
+    )
+
+    assert reply is not None
+    assert "Onboarding restarted. Starting over now." in reply
+    assert "Welcome to CareOS." in reply
+    session = context.store.get_onboarding_session("whatsapp:+15556660012")
+    assert session is not None
+    assert session.state == "choose_role"
+    assert session.status == "active"
+
+
 def test_existing_user_support_menu_can_create_erasure_request() -> None:
     tenant = context.store.create_tenant(TenantCreate(name="Deletion Family"))
     participant = context.store.create_participant(
