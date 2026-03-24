@@ -569,6 +569,7 @@ class _FakeStore:
             },
         ]
         self.care_responsibility_assignments: list[dict] = []
+        self.product_telemetry_events: list[dict] = []
 
     def list_caregiver_links_for_patient(self, patient_id: str) -> list[dict]:
         return [dict(link) for (participant_id, linked_patient_id), link in self.links.items() if linked_patient_id == patient_id]
@@ -669,6 +670,33 @@ class _FakeStore:
                 row["status"] = "inactive"
                 return dict(row)
         return None
+
+    def log_product_telemetry_event(
+        self,
+        *,
+        event_name: str,
+        source: str,
+        tenant_id: str | None = None,
+        patient_id: str | None = None,
+        participant_id: str | None = None,
+        actor_role: str = "",
+        channel: str = "",
+        event_value: str = "",
+        structured_context: dict | None = None,
+    ) -> dict:
+        event = {
+            "event_name": event_name,
+            "source": source,
+            "tenant_id": tenant_id,
+            "patient_id": patient_id,
+            "participant_id": participant_id,
+            "actor_role": actor_role,
+            "channel": channel,
+            "event_value": event_value,
+            "structured_context": dict(structured_context or {}),
+        }
+        self.product_telemetry_events.append(event)
+        return dict(event)
 
 
 class _FakeLegacyRouter:
@@ -2022,6 +2050,57 @@ def test_gateway_restores_onboarding_entry(monkeypatch) -> None:
         )
         assert response.status_code == 200
         assert b"Welcome to CareOS." in response.body
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_urgent_symptom_reply_preempts_other_flows(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "openclaw_first"
+    fake_context = _FakeAppContext()
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550001111",
+                "To": "whatsapp:+14155238886",
+                "Body": "I am having chest pain",
+                "MessageSid": "SM-gw-urgent-symptom",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Chest pain can be an emergency." in response.body
+        assert b"Call 911 now or go to the nearest emergency room." in response.body
+        assert fake_context.store.product_telemetry_events[-1]["event_name"] == "urgent_symptom_message_detected"
+        assert fake_context.store.product_telemetry_events[-1]["event_value"] == "chest_pain"
+    finally:
+        monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
+        settings.gateway_conversation_mode = previous_mode
+
+
+def test_gateway_urgent_symptom_reply_works_without_identity(monkeypatch) -> None:
+    previous_mode = settings.gateway_conversation_mode
+    settings.gateway_conversation_mode = "deterministic_first"
+    fake_context = _FakeAppContext()
+    fake_context.identity_service.identity = None
+    try:
+        monkeypatch.setattr(twilio_gateway, "adapter", _AdapterBase())
+        monkeypatch.setattr(twilio_gateway, "app_context", fake_context)
+        response = _post_gateway(
+            {
+                "From": "whatsapp:+15550009999",
+                "To": "whatsapp:+14155238886",
+                "Body": "I have shortness of breath",
+                "MessageSid": "SM-gw-urgent-no-identity",
+            }
+        )
+        assert response.status_code == 200
+        assert b"Trouble breathing can be an emergency." in response.body
+        assert b"Reply SUPPORT for non-emergency CareOS help." in response.body
+        assert fake_context.store.product_telemetry_events[-1]["participant_id"] is None
+        assert fake_context.store.product_telemetry_events[-1]["event_value"] == "shortness_of_breath"
     finally:
         monkeypatch.setattr(twilio_gateway, "app_context", _FakeAppContext())
         settings.gateway_conversation_mode = previous_mode

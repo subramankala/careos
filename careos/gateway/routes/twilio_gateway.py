@@ -263,6 +263,68 @@ def _parse_plan_command(text: str) -> tuple[str, str, bool] | None:
     return _derive_plan_key(summary), summary, False
 
 
+_URGENT_SYMPTOM_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bchest pain\b", flags=re.IGNORECASE), "chest_pain"),
+    (re.compile(r"\bchest hurts?\b", flags=re.IGNORECASE), "chest_pain"),
+    (re.compile(r"\bpressure in (my )?chest\b", flags=re.IGNORECASE), "chest_pressure"),
+    (re.compile(r"\bshortness of breath\b", flags=re.IGNORECASE), "shortness_of_breath"),
+    (re.compile(r"\b(can'?t|cannot) breathe\b", flags=re.IGNORECASE), "trouble_breathing"),
+    (re.compile(r"\btrouble breathing\b", flags=re.IGNORECASE), "trouble_breathing"),
+)
+
+
+def _detect_urgent_symptom(text: str) -> str | None:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return None
+    for pattern, label in _URGENT_SYMPTOM_PATTERNS:
+        if pattern.search(normalized):
+            return label
+    return None
+
+
+def _urgent_symptom_reply(label: str) -> str:
+    if label in {"shortness_of_breath", "trouble_breathing"}:
+        concern = "Trouble breathing can be an emergency."
+    else:
+        concern = "Chest pain can be an emergency."
+    return (
+        f"{concern} Call 911 now or go to the nearest emergency room. "
+        "Do not wait for a text reply if symptoms are severe or getting worse. "
+        "If a clinician gave you emergency instructions or rescue medicine for this symptom, follow them now. "
+        "Reply SUPPORT for non-emergency CareOS help."
+    )
+
+
+def _log_urgent_symptom_event(
+    *,
+    identity: ParticipantIdentity | None,
+    linked_patients: list[LinkedPatientSummary],
+    label: str,
+) -> None:
+    telemetry_logger = getattr(app_context.store, "log_product_telemetry_event", None)
+    if telemetry_logger is None:
+        return
+    patient_id: str | None = None
+    if identity is not None:
+        active_patient_id = app_context.identity_service.get_active_patient_context(identity.participant_id)
+        if active_patient_id:
+            patient_id = str(active_patient_id)
+        elif len(linked_patients) == 1:
+            patient_id = str(linked_patients[0].patient_id)
+    telemetry_logger(
+        event_name="urgent_symptom_message_detected",
+        source="safety_triage",
+        tenant_id=str(identity.tenant_id) if identity is not None else None,
+        patient_id=patient_id,
+        participant_id=str(identity.participant_id) if identity is not None else None,
+        actor_role=str(identity.participant_role.value) if identity is not None else "",
+        channel="whatsapp",
+        event_value=label,
+        structured_context={"symptom_label": label},
+    )
+
+
 def _infer_plan_date_and_expiry(summary: str, timezone_name: str, now_utc: datetime) -> tuple[date, datetime, str]:
     normalized = " ".join(summary.strip().lower().split())
     base_date = _local_date_for_timezone(timezone_name, now_utc)
@@ -1301,6 +1363,11 @@ async def twilio_gateway_webhook(request: Request) -> Response:
     linked_patients: list[LinkedPatientSummary] = []
     if identity is not None:
         linked_patients = app_context.identity_service.list_linked_patients(identity.participant_id)
+
+    urgent_symptom = _detect_urgent_symptom(text)
+    if urgent_symptom is not None:
+        _log_urgent_symptom_event(identity=identity, linked_patients=linked_patients, label=urgent_symptom)
+        return Response(content=message_response(_urgent_symptom_reply(urgent_symptom)), media_type="text/xml")
 
     onboarding_reply = app_context.onboarding.maybe_handle_message(
         sender_phone=sender,
